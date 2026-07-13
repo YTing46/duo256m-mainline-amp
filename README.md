@@ -4,8 +4,7 @@ Milk-V Duo256M（SG2002，雙 C906 AMP）的異質多核通訊機制移植：
 把 vendor 5.10 SDK 的 ThreadX + RPMsg + remoteproc 堆疊搬上 **mainline Linux 7.0-rc6**，
 修掉一路上的通訊 bug 與一個 mainline 級的 clock 根因，並以量化數據對照 vendor 基線。
 
-本專題復刻並延伸 [HenryChaing 的「Linux 核心專題: 異質多核通訊機制」](https://hackmd.io/@sysprog/linux2025-projects)，
-在 NCKU jserv Linux 核心課程脈絡下進行。
+本專題復刻並延伸 [HenryChaing 的「Linux 核心專題: 異質多核通訊機制」](https://hackmd.io/@sysprog/linux2025-projects)。
 
 ## 成果總覽
 
