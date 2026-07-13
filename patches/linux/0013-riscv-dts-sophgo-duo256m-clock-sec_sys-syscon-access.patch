@@ -1,0 +1,56 @@
+From 36da34aaed2a85b9db0d40b78261adf1f0d033a9 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 14 Jul 2026 04:50:02 +0800
+Subject: [PATCH 13/13] riscv: dts: sophgo: duo256m: clock sec_sys syscon
+ accesses with clk_efuse
+
+Any load/store to the SEC_SYS block (0x020b0000) with clk_efuse
+(CLK_EN_0 bit 11) gated stalls the AXI interconnect and wedges the
+whole SoC, including MMC - a single devmem read is enough to
+reproduce. Mainline gates the unused clock at late_initcall via
+clk_disable_unused, so the first C906L remoteproc start after boot
+(sysfs 'echo start') froze all rootfs I/O board-wide.
+
+The vendor kernel avoids this by wrapping every sec_top access in
+clk_prepare_enable(clk_efuse) (cvitek-spacc.c). Do the equivalent
+declaratively: give the sec_sys syscon node a clocks property so
+syscon attaches clk_efuse to the regmap and regmap-mmio enables it
+just-in-time around each access.
+
+Verified on Duo256M: with the clock gated (hw enable = N), rproc
+start/stop/start all return 0, rpmsg pingpong RTT ~155us, and the
+gate drops back to N when idle. Replaces the clk_ignore_unused
+cmdline workaround.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts b/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
+index bb129d9843da..bacf88f6b874 100644
+--- a/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
+@@ -63,10 +63,19 @@ soc {
+ 		 * SEC_SYS block: C906L enable (0x04 bit13) and boot address
+ 		 * (0x20/0x24), same registers the vendor FSBL pokes to start
+ 		 * the little core (fsbl/plat/cv181x/platform.c).
++		 *
++		 * Register access requires clk_efuse (CLK_EN_0 bit 11): with
++		 * it gated, any load/store to this block stalls the bus and
++		 * wedges the whole SoC (vendor cvitek-spacc.c wraps its
++		 * sec_top pokes in clk_prepare_enable(clk_efuse) for the same
++		 * reason). syscon attaches the clock to the regmap so every
++		 * access enables it just-in-time, surviving
++		 * clk_disable_unused without clk_ignore_unused.
+ 		 */
+ 		sec_sys: syscon@20b0000 {
+ 			compatible = "sophgo,sg2002-sec-sys", "syscon";
+ 			reg = <0x020b0000 0x1000>;
++			clocks = <&clk CLK_EFUSE>;
+ 		};
+ 	};
+ 
+-- 
+2.34.1
+

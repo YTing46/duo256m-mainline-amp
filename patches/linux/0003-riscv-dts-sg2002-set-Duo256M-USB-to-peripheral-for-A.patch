@@ -1,0 +1,32 @@
+From 382b5d3fe034c3f11e5c05fea70b0ed0e3053fe7 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Mon, 6 Jul 2026 20:42:22 +0800
+Subject: [PATCH 03/13] riscv: dts: sg2002: set Duo256M USB to peripheral for
+ ADB gadget
+
+The Duo256M's DWC2 controller is dual-role capable, but the ADB-over-USB
+bring-up (functionfs adbd + configfs gadget) needs it enumerated as a USB
+peripheral so a host PC can see the board. Switch dr_mode from "host" to
+"peripheral"; a UDC (4340000.usb) now appears under /sys/class/udc and the
+host `adb devices` lists the board.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts b/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
+index 3681a32a1472..da85547dfd17 100644
+--- a/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
+@@ -127,6 +127,6 @@ &uart0 {
+ };
+ 
+ &usb {
+-	dr_mode = "host";
++	dr_mode = "peripheral";
+ 	status = "okay";
+ };
+-- 
+2.34.1
+

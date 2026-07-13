@@ -1,0 +1,101 @@
+From ee847cec87394e704a6917c5017a8e5132148b23 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 7 Jul 2026 21:39:31 +0800
+Subject: [PATCH 08/13] rpmsg: virtio: use cached buffers with explicit
+ streaming DMA sync
+
+On a dma-noncoherent device dma_alloc_coherent() hands out an uncached
+remap, making every message header/payload access on the host an
+uncached DRAM access. Switch the buffer pool to dma_alloc_noncoherent()
+(cached) with explicit sync points: flush the freshly-zeroed pool once
+before device use, clean each TX message after it is written, and
+invalidate each RX buffer before it is read in recv_done.
+
+Measured on SG2002 (10k-sample RTT decomposition, 4B payload): p50 RTT
+154.1us -> 150.5us; the gain grows with payload size since the copies
+dominate there. Pingpong 16/16 sanity holds.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ drivers/rpmsg/virtio_rpmsg_bus.c | 29 ++++++++++++++++++++++++-----
+ 1 file changed, 24 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/rpmsg/virtio_rpmsg_bus.c b/drivers/rpmsg/virtio_rpmsg_bus.c
+index 8d9e2b4dc7c1..649bd41a45ac 100644
+--- a/drivers/rpmsg/virtio_rpmsg_bus.c
++++ b/drivers/rpmsg/virtio_rpmsg_bus.c
+@@ -557,6 +557,11 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
+ 			 msg, sizeof(*msg) + len, true);
+ #endif
+ 
++	dma_sync_single_for_device(vrp->vdev->dev.parent,
++				   vrp->bufs_dma +
++				   ((void *)msg - (void *)vrp->rbufs),
++				   sizeof(*msg) + len, DMA_TO_DEVICE);
++
+ 	rpmsg_sg_init(&sg, msg, sizeof(*msg) + len);
+ 
+ 	mutex_lock(&vrp->tx_lock);
+@@ -734,6 +739,11 @@ static void rpmsg_recv_done(struct virtqueue *rvq)
+ 	}
+ 
+ 	while (msg) {
++		/* cached pool: invalidate before reading the device's write */
++		dma_sync_single_for_cpu(rvq->vdev->dev.parent,
++					vrp->bufs_dma +
++					((void *)msg - (void *)vrp->rbufs),
++					vrp->buf_size, DMA_FROM_DEVICE);
+ 		err = rpmsg_recv_single(vrp, dev, msg, len);
+ 		if (err)
+ 			break;
+@@ -859,8 +869,9 @@ static int rpmsg_probe(struct virtio_device *vdev)
+ 	total_buf_space = vrp->num_bufs * vrp->buf_size;
+ 
+ 	/* allocate coherent memory for the buffers */
+-	bufs_va = dma_alloc_coherent(vdev->dev.parent,
++	bufs_va = dma_alloc_noncoherent(vdev->dev.parent,
+ 				     total_buf_space, &vrp->bufs_dma,
++				     DMA_BIDIRECTIONAL,
+ 				     GFP_KERNEL);
+ 	if (!bufs_va) {
+ 		err = -ENOMEM;
+@@ -873,6 +884,14 @@ static int rpmsg_probe(struct virtio_device *vdev)
+ 	/* half of the buffers is dedicated for RX */
+ 	vrp->rbufs = bufs_va;
+ 
++	/*
++	 * The pool is cached memory now (dma_alloc_noncoherent): flush the
++	 * zeroed-but-dirty lines to DRAM before the device ever touches it,
++	 * or a later eviction would clobber device-written data.
++	 */
++	dma_sync_single_for_device(vdev->dev.parent, vrp->bufs_dma,
++				   total_buf_space, DMA_TO_DEVICE);
++
+ 	/* and half is dedicated for TX */
+ 	vrp->sbufs = bufs_va + total_buf_space / 2;
+ 
+@@ -945,8 +964,8 @@ static int rpmsg_probe(struct virtio_device *vdev)
+ free_ctrldev:
+ 	rpmsg_virtio_del_ctrl_dev(rpdev_ctrl);
+ free_coherent:
+-	dma_free_coherent(vdev->dev.parent, total_buf_space,
+-			  bufs_va, vrp->bufs_dma);
++	dma_free_noncoherent(vdev->dev.parent, total_buf_space,
++			  bufs_va, vrp->bufs_dma, DMA_BIDIRECTIONAL);
+ vqs_del:
+ 	vdev->config->del_vqs(vrp->vdev);
+ free_vrp:
+@@ -977,8 +996,8 @@ static void rpmsg_remove(struct virtio_device *vdev)
+ 
+ 	vdev->config->del_vqs(vrp->vdev);
+ 
+-	dma_free_coherent(vdev->dev.parent, total_buf_space,
+-			  vrp->rbufs, vrp->bufs_dma);
++	dma_free_noncoherent(vdev->dev.parent, total_buf_space,
++			  vrp->rbufs, vrp->bufs_dma, DMA_BIDIRECTIONAL);
+ 
+ 	kfree(vrp);
+ }
+-- 
+2.34.1
+

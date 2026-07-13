@@ -1,0 +1,79 @@
+From 67f6e5f7d09d51a67db112830612d8eaaf83d932 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 7 Jul 2026 06:41:57 +0800
+Subject: [PATCH 05/13] rpmsg: cvi: service all virtqueues from the
+ notification work handler
+
+The mailbox notification handler stored the incoming vring index in a
+single global (rtos_cmd_id) and the work handler dispatched only that
+one virtqueue's callback. schedule_delayed_work() is a no-op while the
+work is still pending, so two back-to-back notifications (e.g. a
+C906L->host echo on vring0 arriving right after a host->remote kick
+acknowledgment) collapsed into one work run that serviced only the
+last cmd_id -- the other virtqueue's callback was silently lost and
+the echo was never delivered to the endpoint.
+
+Poll every virtqueue from the work handler instead; virtio callbacks
+re-check the used ring, so servicing an idle vq is harmless. Also
+print th.sxstatus MAEE and dev_is_dma_coherent() once at probe, since
+correct uncached/non-coherent behavior of the shared vrings and
+buffers depends on both.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ drivers/rpmsg/cvi_rpmsg_shmem.c | 25 ++++++++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/rpmsg/cvi_rpmsg_shmem.c b/drivers/rpmsg/cvi_rpmsg_shmem.c
+index ee53a3999841..938f4f14e91b 100644
+--- a/drivers/rpmsg/cvi_rpmsg_shmem.c
++++ b/drivers/rpmsg/cvi_rpmsg_shmem.c
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include <linux/clk.h>
++#include <linux/dma-map-ops.h>
+ #include <linux/err.h>
+ #include <linux/init.h>
+ #include <linux/interrupt.h>
+@@ -304,7 +305,20 @@ static void rpmsg_work_handler(struct work_struct *work)
+ {
+ 	// virtqueue callback
+ 	struct cvi_virdev *cvi_virdev_inst = container_of(vdev_isr, struct cvi_virdev, vdev);
+-	cvi_virdev_inst->vq[rtos_cmd_id]->callback(cvi_virdev_inst->vq[rtos_cmd_id]);
++	int i;
++
++	/*
++	 * Bug#2 fix: the old code dispatched only vq[rtos_cmd_id], where
++	 * rtos_cmd_id is a single global written by the mailbox handler. Because
++	 * schedule_delayed_work() is a no-op while the work is already pending,
++	 * two notifications arriving back-to-back collapse into ONE work run that
++	 * services only the last cmd_id -- the other virtqueue's callback is
++	 * silently lost, so the C906L->host echo is never consumed and pingpong
++	 * stalls after ~1 round-trip. Poll ALL virtqueues instead; virtio
++	 * callbacks re-check the used ring, so servicing an idle vq is harmless.
++	 */
++	for (i = 0; i < cvi_virdev_inst->num_of_vqs; i++)
++		cvi_virdev_inst->vq[i]->callback(cvi_virdev_inst->vq[i]);
+ }
+ 
+ static void rtos_cmdqu_handler(unsigned char cmd_id, unsigned int param_ptr, void* device_id)
+@@ -322,6 +336,15 @@ static int cvi_rpmsg_probe(struct platform_device *pdev)
+ 	mailbox_context_rpmsg = (unsigned long __iomem *)(reg_base + MAILBOX_CONTEXT_OFFSET);
+ 	INIT_DELAYED_WORK(&rpmsg_work, rpmsg_work_handler);
+ 
++	/*
++	 * Bug#2 diagnostics: uncached mappings on C906 depend on the T-Head MAE
++	 * errata (th.sxstatus.MAEE must be set and the alternative applied), and
++	 * coherent-buffer behavior depends on this device being dma-noncoherent.
++	 */
++	pr_info("cvi_rpmsg: th.sxstatus=%lx (MAEE=%d) dev_is_dma_coherent=%d\n",
++		csr_read(0x5c0), !!(csr_read(0x5c0) & 0x200000UL),
++		dev_is_dma_coherent(&pdev->dev));
++
+ 	for (i = 0; i < ARRAY_SIZE(cvi_rpmsg_vprocs); i++) {
+ 		struct cvi_rpmsg_vproc *rpdev = &cvi_rpmsg_vprocs[i];
+ 
+-- 
+2.34.1
+

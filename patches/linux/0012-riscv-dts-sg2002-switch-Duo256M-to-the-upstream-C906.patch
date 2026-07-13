@@ -1,0 +1,61 @@
+From 43e8a5f5f88cf8c652e25b7b8a915bf5e5e9f643 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 7 Jul 2026 22:44:56 +0800
+Subject: [PATCH 12/13] riscv: dts: sg2002: switch Duo256M to the upstream
+ C906L remoteproc
+
+Add the SEC_SYS syscon node (0x020b0000, the same block the vendor
+FSBL pokes: enable bit13 @0x04, boot address @0x20) and replace the
+vendor-glue rproc node with the sophgo,cv1800b-c906l binding in
+standalone mode. RPMsg keeps using the out-of-tree cvitek glue until
+the virtio/mailbox path is migrated.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../boot/dts/sophgo/sg2002-milkv-duo256m.dts  | 28 +++++++++++++++----
+ 1 file changed, 23 insertions(+), 5 deletions(-)
+
+diff --git a/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts b/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
+index 4bff986644ad..bb129d9843da 100644
+--- a/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
+@@ -58,13 +58,31 @@ rpmsg {
+ 		status = "okay";
+ 	};
+ 
++	soc {
++		/*
++		 * SEC_SYS block: C906L enable (0x04 bit13) and boot address
++		 * (0x20/0x24), same registers the vendor FSBL pokes to start
++		 * the little core (fsbl/plat/cv181x/platform.c).
++		 */
++		sec_sys: syscon@20b0000 {
++			compatible = "sophgo,sg2002-sec-sys", "syscon";
++			reg = <0x020b0000 0x1000>;
++		};
++	};
++
++	/*
++	 * Upstream C906L remoteproc (Junhui Liu's v2 series + local fixes)
++	 * in standalone mode: loads cvirtos.elf into the rtos carveout and
++	 * boots it via SEC_SYS + RST_CPUSYS2. RPMsg still rides the
++	 * out-of-tree cvitek glue below until the virtio/mailbox path is
++	 * migrated.
++	 */
+ 	rproc {
+-		compatible = "cvi,sg2002-rproc";
+-		reg = <0x8fe00000 0x200000>;
+-		resets = <&rst RST_CPUSYS2>;
+-		reset-names = "c906l";
++		compatible = "sophgo,sg2002-c906l", "sophgo,cv1800b-c906l";
+ 		firmware-name = "cvirtos.elf";
+-		status = "okay";
++		memory-region = <&rtos_reserved>;
++		resets = <&rst RST_CPUSYS2>;
++		sophgo,syscon = <&sec_sys>;
+ 	};
+ 
+ 	rtos_cmdqu {
+-- 
+2.34.1
+

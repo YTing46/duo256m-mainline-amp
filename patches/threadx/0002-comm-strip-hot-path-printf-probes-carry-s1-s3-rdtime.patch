@@ -1,0 +1,119 @@
+From aafff48b760674b515c4ff02c516661e9f6dd2a4 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 7 Jul 2026 21:29:18 +0800
+Subject: [PATCH 2/3] comm: strip hot-path printf probes; carry s1/s3 rdtime
+ stamps in the echo
+
+Remove the RT: DBG serial prints from the pingpong hot path (each line
+costs ~3ms at 124000 baud and dominates any latency measurement -- the
+same printf pollution Henry hit). Expand THE_MESSAGE to 24 bytes so the
+echo carries two rdtime stamps back to Linux: s1 at prvQueueISR entry
+and s3 right before rpmsg_lite_send, enabling the decomp4-style RTT
+breakdown. Legacy 4-byte pingpong clients still work (char-dev read
+truncates).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ cvitek/task/comm/src/riscv64/comm_main.c | 41 ++++++++++++++++++------
+ 1 file changed, 31 insertions(+), 10 deletions(-)
+
+diff --git a/cvitek/task/comm/src/riscv64/comm_main.c b/cvitek/task/comm/src/riscv64/comm_main.c
+index 5a44ff7..a52dc17 100755
+--- a/cvitek/task/comm/src/riscv64/comm_main.c
++++ b/cvitek/task/comm/src/riscv64/comm_main.c
+@@ -231,11 +231,36 @@ struct rpmsg_lite_ept_static_context g_ept_context, g_ept_led_context;
+ volatile int32_t g_has_received, led_has_recieved;
+ static uint32_t g_remote_addr = 0, led_remote_addr = 0;
+ 
++/*
++ * RTT decomposition (Henry's decomp4 method): the echo carries two C906L
++ * rdtime stamps back to Linux so the RTT can be split into segments:
++ *   s1 = mailbox ISR entry (prvQueueISR) -- forward transport endpoint
++ *   s3 = right before rpmsg_lite_send    -- remote turnaround endpoint
++ * Both harts' time CSRs tick at the same 25 MHz; forward+reverse transport
++ * summed on the Linux side cancels the inter-CLINT offset.
++ * Legacy 4-byte pingpong clients still work: read_cb accepts <= 24B, the
++ * char-dev read truncates the 24B echo to the caller's buffer size.
++ */
+ typedef struct the_message
+ {
+     uint32_t DATA;
++    uint32_t magic;     /* 0xB47C0DE5 marks a stamped echo */
++    uint64_t s1_ticks;
++    uint64_t s3_ticks;
+ } THE_MESSAGE, *THE_MESSAGE_PTR;
+ 
++#define RTT_STAMP_MAGIC 0xB47C0DE5U
++
++volatile uint64_t g_isr_ticks;   /* s1, written by prvQueueISR */
++
++static inline uint64_t rdtime_ticks(void)
++{
++    uint64_t t;
++
++    __asm__ __volatile__("rdtime %0" : "=r"(t));
++    return t;
++}
++
+ static THE_MESSAGE volatile g_msg = {0};
+ static THE_MESSAGE volatile led_msg = {0};
+ 
+@@ -248,7 +273,6 @@ static int32_t rpmsg_ept_read_cb(void *payload, uint32_t payload_len, uint32_t s
+ 		(void)memcpy((void *)&g_msg, payload, payload_len);
+         g_remote_addr = src;
+         *has_received = 1;
+-        printf("RT: DBG readcb DATA=%d src=%d hr=%d\n", g_msg.DATA, (int)src, (int)*has_received);
+     }
+     return RL_RELEASE;
+ }
+@@ -291,9 +315,11 @@ void thread_rpmsg_entry(ULONG thread_input)
+         {
+ 			g_has_received = 0;
+             g_msg.DATA++;
+-            int32_t sret = rpmsg_lite_send(gp_rpmsg_dev_inst, gp_rpmsg_ept, g_remote_addr, (char *)&g_msg, sizeof(THE_MESSAGE),
++            g_msg.magic = RTT_STAMP_MAGIC;
++            g_msg.s1_ticks = g_isr_ticks;
++            g_msg.s3_ticks = rdtime_ticks();
++            (void)rpmsg_lite_send(gp_rpmsg_dev_inst, gp_rpmsg_ept, g_remote_addr, (char *)&g_msg, sizeof(THE_MESSAGE),
+                                   RL_DONT_BLOCK);
+-			printf("send: %d ret=%d\n",g_msg.DATA, sret);
+         }
+ 		if (1 == led_has_recieved)
+         {
+@@ -329,17 +355,11 @@ void prvCmdQuRunTask(ULONG thread_input)
+ 		//xQueueReceive(gTaskCtx[0].queHandle, &rtos_cmdq, portMAX_DELAY);
+ 		tx_queue_receive(&mailbox_queue, &rtos_cmdq, TX_WAIT_FOREVER);
+ 
+-		printf("RT: DBG task cmd_id=%d param=0x%x lv=%d\n",
+-		       rtos_cmdq.cmd_id, rtos_cmdq.param_ptr,
+-		       rtos_cmdq.resv.valid.linux_valid);
+-
+ 		switch (rtos_cmdq.cmd_id) {
+ 		case 0 :
+-			printf("RT: DBG env_isr(0)\n");
+ 			env_isr(0);
+ 			break;
+ 		case 1 :
+-			printf("RT: DBG env_isr(1)\n");
+ 			env_isr(1);
+ 			break;
+ 		case CMD_TEST_A:
+@@ -394,13 +414,14 @@ void prvQueueISR(void)
+ 	unsigned char valid_val;
+ 	int i;
+ 	cmdqu_t *cmdq;
++
++	g_isr_ticks = rdtime_ticks();   /* s1: forward-transport endpoint */
+ 	//BaseType_t YieldRequired = pdFALSE;
+ 	UINT ret;
+ 
+ 	set_val = mbox_reg->cpu_mbox_set[RECEIVE_CPU].cpu_mbox_int_int.mbox_int;
+ 
+ 	if (set_val) {
+-		printf("RT: DBG ISR set=0x%x\n", set_val);
+ 		for (i = 0; i < MAILBOX_MAX_NUM; i++) {
+ 			valid_val = set_val & (1 << i);
+ 
+-- 
+2.34.1
+

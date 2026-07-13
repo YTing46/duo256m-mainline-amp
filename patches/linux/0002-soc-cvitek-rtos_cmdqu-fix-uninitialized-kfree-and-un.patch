@@ -1,0 +1,164 @@
+From 366cbecfb7aa42481a7fa52b194c829d3e53519c Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Sun, 5 Jul 2026 21:54:30 +0800
+Subject: [PATCH 02/13] soc: cvitek: rtos_cmdqu: fix uninitialized kfree and
+ unchecked copy_from_user
+
+Correctness fixes in the ported dual-core command-queue driver:
+
+- cvi_rtos_cmdqu_ioctl(): the RTOS_CMDQU_SEND_WAIT case called
+  kfree(wait_list) on an uninitialized local pointer -- wait_list is
+  never assigned in that path (the real alloc/free lives inside
+  rtos_cmdqu_send_wait()). Freeing garbage would corrupt the heap on
+  every blocking send. Drop the bogus kfree() calls.
+
+- Check the return value of copy_from_user() in the SEND / SEND_WAKEUP /
+  REQUEST / REQUEST_FREE ioctl cases and return -EFAULT on short copy,
+  instead of proceeding with a partially-initialized cmdqu_t.
+
+Also silence -Wmissing-prototypes: make the file-local helpers
+init_sqirq/rtos_irq_handler/rtos_cmdqu_init/rtos_cmdqu_deinit and
+hw_spin_lock static, and include rtos_cmdqu_cb.h in rtos_cmdqu_cb.c so
+its prototype is visible. No functional change from these three.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.c  |  2 +-
+ drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c    | 41 ++++++++++---------
+ drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.c |  1 +
+ 3 files changed, 23 insertions(+), 21 deletions(-)
+
+diff --git a/drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.c b/drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.c
+index 5f891a394bf5..1a14f2c5f344 100644
+--- a/drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.c
++++ b/drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.c
+@@ -71,7 +71,7 @@ static inline int hw_spin_trylock(hw_raw_spinlock_t *lock)
+ #endif
+ }
+ 
+-int hw_spin_lock(hw_raw_spinlock_t *lock)
++static int hw_spin_lock(hw_raw_spinlock_t *lock)
+ {
+ 	u64 i;
+ 	u64 loops = 1000000;
+diff --git a/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c
+index a7d7db5fb37e..1af15010df74 100644
+--- a/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c
++++ b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c
+@@ -83,7 +83,7 @@ int request_rtos_irq(unsigned char ip_id, void (*handler), const char *devname,
+ }
+ EXPORT_SYMBOL(request_rtos_irq);
+ 
+-void init_sqirq(void)
++static void init_sqirq(void)
+ {
+ 	int ip_id;
+ 
+@@ -118,7 +118,7 @@ static void callback_rtos_irq_handler(int cmd_id, unsigned int ptr, void *dev_id
+ 
+ DEFINE_CVI_SPINLOCK(mailbox_lock, SPIN_MBOX);
+ 
+-irqreturn_t rtos_irq_handler(int irq, void *dev_id)
++static irqreturn_t rtos_irq_handler(int irq, void *dev_id)
+ {
+ 	char set_val, done_val;
+ 	int i;
+@@ -215,7 +215,7 @@ irqreturn_t rtos_irq_handler(int irq, void *dev_id)
+ 	return IRQ_HANDLED;
+ }
+ 
+-long rtos_cmdqu_init(void)
++static long rtos_cmdqu_init(void)
+ {
+ 	long ret = 0;
+ 	int i;
+@@ -239,7 +239,7 @@ long rtos_cmdqu_init(void)
+ 	return ret;
+ }
+ 
+-long rtos_cmdqu_deinit(void)
++static long rtos_cmdqu_deinit(void)
+ {
+ 	long ret = 0;
+ 	pr_debug("RTOS_CMDQU_DEINIT\n");
+@@ -410,16 +410,18 @@ static long cvi_rtos_cmdqu_ioctl(struct file *filp, unsigned int cmd, unsigned l
+ 	switch (cmd) {
+ 		case RTOS_CMDQU_SEND:
+ 			pr_debug("RTOS_CMDQU_SEND\n");
+-			copy_from_user(&cmdq,
++			if (copy_from_user(&cmdq,
+ 				(struct cmdqu_t __user *)arg,
+-				sizeof(struct cmdqu_t));
++				sizeof(struct cmdqu_t)))
++				return -EFAULT;
+ 			ret = rtos_cmdqu_send(&cmdq);
+ 			break;
+ 		case RTOS_CMDQU_SEND_WAKEUP:
+ 			pr_debug("RTOS_CMDQU_SEND_WAKEUP\n");
+-			copy_from_user(&cmdq,
++			if (copy_from_user(&cmdq,
+ 				(struct cmdqu_t __user *)arg,
+-				sizeof(struct cmdqu_t));
++				sizeof(struct cmdqu_t)))
++				return -EFAULT;
+ 			pr_debug("cmdq.ip_id=%d cmdq.cmd_id=%d\n", cmdq.ip_id, cmdq.cmd_id);
+ 
+ 			spin_lock_irqsave(&send_queue_lock, flags);
+@@ -447,31 +449,30 @@ static long cvi_rtos_cmdqu_ioctl(struct file *filp, unsigned int cmd, unsigned l
+ 
+ 		case RTOS_CMDQU_SEND_WAIT:
+ 			pr_debug("RTOS_CMDQU_SEND_WAIT\n");
+-			ret = copy_from_user(&cmdq,
++			if (copy_from_user(&cmdq,
+ 				(struct cmdqu_t __user *)arg,
+-				sizeof(struct cmdqu_t));
+-			if (ret) {
+-				kfree(wait_list);
++				sizeof(struct cmdqu_t)))
+ 				return -EFAULT;
+-			}
+ 			rtos_cmdqu_send_wait(&cmdq, cmdq.cmd_id);
+-			ret = copy_to_user((struct cmdqu_t __user *)arg,
++			if (copy_to_user((struct cmdqu_t __user *)arg,
+ 					&cmdq,
+-					sizeof(struct cmdqu_t));
+-			kfree(wait_list);
++					sizeof(struct cmdqu_t)))
++				return -EFAULT;
+ 			break;
+ 		case RTOS_CMDQU_REQUEST:
+-			copy_from_user(&cmdq,
++			if (copy_from_user(&cmdq,
+ 				(struct cmdqu_t __user *)arg,
+-				sizeof(struct cmdqu_t));
++				sizeof(struct cmdqu_t)))
++				return -EFAULT;
+ 
+ 			ret = request_rtos_irq(cmdq.ip_id, callback_rtos_irq_handler,
+ 				"RTOS_CMDQU_REQUEST", (void *)((unsigned long)cmdq.param_ptr));
+ 			break;
+ 		case RTOS_CMDQU_REQUEST_FREE:
+-			copy_from_user(&cmdq,
++			if (copy_from_user(&cmdq,
+ 				(struct cmdqu_t __user *)arg,
+-				sizeof(struct cmdqu_t));
++				sizeof(struct cmdqu_t)))
++				return -EFAULT;
+ 			free_rtos_irq(cmdq.ip_id);
+ 			break;
+ 		default:
+diff --git a/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.c b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.c
+index 598e3373af89..e0a48d93bdf2 100644
+--- a/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.c
++++ b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.c
+@@ -1,6 +1,7 @@
+ #include "rtos_cmdqu.h"
+ #include "base_cb.h"
+ #include "cmdqu_cb.h"
++#include "rtos_cmdqu_cb.h"
+ 
+ int rtos_cmdqu_cb(void *dev, enum ENUM_MODULES_ID caller, u32 cmd, void *arg)
+ {
+-- 
+2.34.1
+

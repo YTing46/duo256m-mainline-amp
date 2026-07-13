@@ -1,0 +1,87 @@
+From ff51694fa1cae16427ee2ffb3080de48c6dc314a Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 7 Jul 2026 22:03:16 +0800
+Subject: [PATCH 3/3] comm: echo variable-length payloads up to 496B for
+ payload sweep
+
+read_cb previously dropped anything larger than the 24B stamped
+message, so RTT could only be measured at one payload size. Accept
+up to RL_BUFFER_PAYLOAD_SIZE (496B) into an 8-byte-aligned union
+buffer and echo the same length back (minimum 24B), overwriting the
+first 24 bytes with the stamp header so the decomposition probes
+keep working at every size. Legacy 4B pingpong behavior unchanged.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ cvitek/task/comm/src/riscv64/comm_main.c | 33 +++++++++++++++++-------
+ 1 file changed, 24 insertions(+), 9 deletions(-)
+
+diff --git a/cvitek/task/comm/src/riscv64/comm_main.c b/cvitek/task/comm/src/riscv64/comm_main.c
+index a52dc17..20f6644 100755
+--- a/cvitek/task/comm/src/riscv64/comm_main.c
++++ b/cvitek/task/comm/src/riscv64/comm_main.c
+@@ -261,16 +261,27 @@ static inline uint64_t rdtime_ticks(void)
+     return t;
+ }
+ 
+-static THE_MESSAGE volatile g_msg = {0};
++/*
++ * Echo buffer sized to the full rpmsg payload (496B) so the RTT bench can
++ * sweep payload sizes. The union keeps the THE_MESSAGE stamp header
++ * 8-byte aligned at offset 0; echoes >= 24B carry stamps in-band, smaller
++ * requests still get the fixed 24B stamped reply (legacy 4B pingpong OK).
++ */
++static union {
++    THE_MESSAGE msg;
++    uint8_t raw[RL_BUFFER_PAYLOAD_SIZE];
++} g_rx = {0};
++static volatile uint32_t g_rx_len;
+ static THE_MESSAGE volatile led_msg = {0};
+ 
+ /* Internal functions */
+ static int32_t rpmsg_ept_read_cb(void *payload, uint32_t payload_len, uint32_t src, void *priv)
+ {
+     volatile int32_t *has_received = priv;
+-    if (payload_len <= sizeof(THE_MESSAGE))
++    if (payload_len <= sizeof(g_rx.raw))
+     {
+-		(void)memcpy((void *)&g_msg, payload, payload_len);
++		(void)memcpy((void *)g_rx.raw, payload, payload_len);
++        g_rx_len = payload_len;
+         g_remote_addr = src;
+         *has_received = 1;
+     }
+@@ -313,12 +324,16 @@ void thread_rpmsg_entry(ULONG thread_input)
+     {
+         if (1 == g_has_received)
+         {
++            uint32_t echo_len = g_rx_len;
++
+ 			g_has_received = 0;
+-            g_msg.DATA++;
+-            g_msg.magic = RTT_STAMP_MAGIC;
+-            g_msg.s1_ticks = g_isr_ticks;
+-            g_msg.s3_ticks = rdtime_ticks();
+-            (void)rpmsg_lite_send(gp_rpmsg_dev_inst, gp_rpmsg_ept, g_remote_addr, (char *)&g_msg, sizeof(THE_MESSAGE),
++            if (echo_len < sizeof(THE_MESSAGE))
++                echo_len = sizeof(THE_MESSAGE);
++            g_rx.msg.DATA++;
++            g_rx.msg.magic = RTT_STAMP_MAGIC;
++            g_rx.msg.s1_ticks = g_isr_ticks;
++            g_rx.msg.s3_ticks = rdtime_ticks();
++            (void)rpmsg_lite_send(gp_rpmsg_dev_inst, gp_rpmsg_ept, g_remote_addr, (char *)g_rx.raw, echo_len,
+                                   RL_DONT_BLOCK);
+         }
+ 		if (1 == led_has_recieved)
+@@ -332,7 +347,7 @@ void thread_rpmsg_entry(ULONG thread_input)
+     (void)rpmsg_lite_destroy_ept(gp_rpmsg_dev_inst, gp_rpmsg_ept);
+     gp_rpmsg_ept = ((void *)0);
+     (void)rpmsg_lite_deinit(gp_rpmsg_dev_inst);
+-    g_msg.DATA = 0U;
++    g_rx.msg.DATA = 0U;
+ }
+ 
+ void prvCmdQuRunTask(ULONG thread_input)
+-- 
+2.34.1
+

@@ -1,0 +1,53 @@
+From 0ad3121fa4cde3e5f97d7b229aa4657c6e2a8b30 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 7 Jul 2026 06:41:41 +0800
+Subject: [PATCH 04/13] riscv: dts: sg2002: mark Duo256M rpmsg node
+ dma-noncoherent
+
+The rpmsg/rproc/rtos_cmdqu AMP nodes live at the devicetree root, not
+under /soc, so they do not inherit the soc node's dma-noncoherent
+property. The rpmsg device was therefore treated as DMA-coherent and
+virtio_rpmsg_bus's dma_alloc_coherent() handed out plain cacheable
+memory for the 256KB message-buffer pool: the C906B's message writes
+(header + payload) lingered in its D-cache and reached DRAM only on
+random eviction, so the cache-incoherent C906L read stale buffer
+contents. Symptom: rpmsg pingpong stalled after 1-4 round-trips in a
+timing-dependent way, while the vring metadata (ioremap'd, no-map
+reserved) stayed consistent.
+
+With dma-noncoherent the buffers are allocated through the
+non-coherent path (T-Head MAE uncached mapping; verified
+th.sxstatus.MAEE=1 and dev_is_dma_coherent()=0 on SG2002), and
+mailbox_pingpong completes 16/16 round-trips repeatably, including
+across remoteproc stop/start.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts b/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
+index da85547dfd17..4bff986644ad 100644
+--- a/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
+@@ -44,6 +44,17 @@ rpmsg {
+ 		vdev-nums = <1>;
+ 		reg = <0x8fc00000 0x10000>;
+ 		reg-names = "desc_region";
++		/*
++		 * SG2002 is not DMA-coherent, but this node sits at the root
++		 * (not under /soc), so it does NOT inherit the soc node's
++		 * dma-noncoherent. Without this, the virtio-rpmsg buffers from
++		 * dma_alloc_coherent() are plain cacheable memory: the C906B's
++		 * writes (message header+payload) linger in its D-cache and
++		 * reach DRAM only on random eviction, so the cache-less C906L
++		 * reads stale buffer contents -- rpmsg pingpong stalls after a
++		 * message or two (Bug #2).
++		 */
++		dma-noncoherent;
+ 		status = "okay";
+ 	};
+ 
+-- 
+2.34.1
+

@@ -1,0 +1,39 @@
+#!/bin/sh
+# S99adb - verify USB peripheral (Task 4a) + bring up adb gadget (Task 4b).
+# Board-side capture to /mnt/diag; host-side `adb devices` is tested separately.
+OUT=/mnt/diag
+rm -rf "$OUT" 2>/dev/null; mkdir -p "$OUT" 2>/dev/null; chmod 777 "$OUT" 2>/dev/null
+
+# ---- Task 4a gate: does a UDC appear now that dr_mode=peripheral? ----
+{
+	echo "kernel=$(uname -r)"
+	echo "== /sys/class/udc (NON-EMPTY = USB peripheral works) =="
+	ls -la /sys/class/udc/
+	echo "== dwc2 / gadget dmesg =="
+	dmesg | grep -iE "dwc2|udc|gadget|4340000|usb" | tail -30
+} > "$OUT/udc.txt" 2>&1
+sync
+
+# ---- adbd binary sanity (v0p7 xthead ISA risk) ----
+{
+	echo "== adbd file =="; ls -la /usr/bin/adbd
+	echo "== interpreter present? =="; ls -la /lib/ld-musl-riscv64v0p7_xthead.so.1
+} > "$OUT/adbd-check.txt" 2>&1
+
+# ---- Task 4b: bring up the adb gadget via vendor script ----
+{
+	echo "== run_usb.sh probe adb =="
+	sh /etc/run_usb.sh probe adb 2>&1
+	echo "rc=$?"
+	sleep 3
+	echo; echo "== UDC binding =="; cat /tmp/usb/usb_gadget/cvitek/UDC 2>/dev/null
+	echo "== adbd process alive? =="; ps 2>/dev/null | grep -i adbd | grep -v grep
+	echo "== functionfs mount =="; mount 2>/dev/null | grep -iE "ffs|functionfs|configfs"
+	echo "== SIGILL / trap in dmesg (v0p7 vector fail)? =="
+	dmesg | grep -iE "illegal instruction|unhandled signal|trap|SIGILL|bad-insn|sepc" | tail -15
+	echo "== gadget dmesg tail =="
+	dmesg | grep -iE "dwc2|udc|gadget|configfs|ffs|composite|android" | tail -20
+} > "$OUT/adb-bringup.txt" 2>&1
+sync
+
+echo done > "$OUT/DONE.txt"; chmod -R a+rX "$OUT" 2>/dev/null; sync

@@ -1,0 +1,2159 @@
+From aaf96b10474bb3c9214ac12073bb2c9b8e6a22cd Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Sat, 4 Jul 2026 20:48:14 +0800
+Subject: [PATCH 01/13] riscv: sophgo: add SG2002 C906L RPMsg dual-core stack
+ for Milk-V Duo256M
+
+Port the CVITEK/Sophgo dual-core (big core <-> C906L little core)
+communication stack from the vendor Linux 5.10 SDK to mainline 7.0:
+
+- rtos_cmdqu mailbox command-queue core under drivers/soc/cvitek/
+- cvi_sg2002_c906l_remoteproc: boot/control the C906L coprocessor
+- cvi_rpmsg_shmem: shared-memory virtio RPMsg transport
+- sg2002-milkv-duo256m.dts board devicetree
+- wire up Kconfig/Makefile and enable in riscv defconfig
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ arch/riscv/boot/dts/sophgo/Makefile           |   1 +
+ .../boot/dts/sophgo/sg2002-milkv-duo256m.dts  | 132 ++++
+ arch/riscv/configs/defconfig                  |   5 +
+ drivers/remoteproc/Kconfig                    |   7 +
+ drivers/remoteproc/Makefile                   |   1 +
+ .../remoteproc/cvi_sg2002_c906l_remoteproc.c  | 174 +++++
+ drivers/rpmsg/Kconfig                         |  10 +
+ drivers/rpmsg/Makefile                        |   1 +
+ drivers/rpmsg/cvi_rpmsg_shmem.c               | 400 +++++++++++
+ drivers/rpmsg/rtos_cmdqu.h                    |  33 +
+ drivers/soc/Kconfig                           |   1 +
+ drivers/soc/Makefile                          |   1 +
+ drivers/soc/cvitek/Kconfig                    |  12 +
+ drivers/soc/cvitek/Makefile                   |   4 +
+ drivers/soc/cvitek/rtos_cmdqu/base_cb.h       |  50 ++
+ drivers/soc/cvitek/rtos_cmdqu/cmdqu_cb.h      |  26 +
+ drivers/soc/cvitek/rtos_cmdqu/cvi_mailbox.h   |  89 +++
+ drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.c  | 161 +++++
+ drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.h  |  43 ++
+ drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c    | 642 ++++++++++++++++++
+ drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.h    |  90 +++
+ drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.c |  39 ++
+ drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.h |   7 +
+ 23 files changed, 1929 insertions(+)
+ create mode 100644 arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
+ create mode 100644 drivers/remoteproc/cvi_sg2002_c906l_remoteproc.c
+ create mode 100644 drivers/rpmsg/cvi_rpmsg_shmem.c
+ create mode 100644 drivers/rpmsg/rtos_cmdqu.h
+ create mode 100644 drivers/soc/cvitek/Kconfig
+ create mode 100644 drivers/soc/cvitek/Makefile
+ create mode 100644 drivers/soc/cvitek/rtos_cmdqu/base_cb.h
+ create mode 100644 drivers/soc/cvitek/rtos_cmdqu/cmdqu_cb.h
+ create mode 100644 drivers/soc/cvitek/rtos_cmdqu/cvi_mailbox.h
+ create mode 100644 drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.c
+ create mode 100644 drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.h
+ create mode 100644 drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c
+ create mode 100644 drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.h
+ create mode 100644 drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.c
+ create mode 100644 drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.h
+
+diff --git a/arch/riscv/boot/dts/sophgo/Makefile b/arch/riscv/boot/dts/sophgo/Makefile
+index 6f65526d4193..1ff69cf7f178 100644
+--- a/arch/riscv/boot/dts/sophgo/Makefile
++++ b/arch/riscv/boot/dts/sophgo/Makefile
+@@ -2,6 +2,7 @@
+ dtb-$(CONFIG_ARCH_SOPHGO) += cv1800b-milkv-duo.dtb
+ dtb-$(CONFIG_ARCH_SOPHGO) += cv1812h-huashan-pi.dtb
+ dtb-$(CONFIG_ARCH_SOPHGO) += sg2002-licheerv-nano-b.dtb
++dtb-$(CONFIG_ARCH_SOPHGO) += sg2002-milkv-duo256m.dtb
+ dtb-$(CONFIG_ARCH_SOPHGO) += sg2042-milkv-pioneer.dtb
+ dtb-$(CONFIG_ARCH_SOPHGO) += sg2042-evb-v1.dtb
+ dtb-$(CONFIG_ARCH_SOPHGO) += sg2042-evb-v2.dtb
+diff --git a/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts b/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
+new file mode 100644
+index 000000000000..3681a32a1472
+--- /dev/null
++++ b/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
+@@ -0,0 +1,132 @@
++// SPDX-License-Identifier: (GPL-2.0 OR MIT)
++/*
++ * Milk-V Duo 256M board support with SG2002 C906L AMP nodes.
++ */
++
++/dts-v1/;
++
++#include "sg2002.dtsi"
++
++/ {
++	model = "Milk-V Duo 256M";
++	compatible = "milkv,duo256m", "sophgo,sg2002";
++
++	aliases {
++		gpio0 = &gpio0;
++		gpio1 = &gpio1;
++		gpio2 = &gpio2;
++		gpio3 = &gpio3;
++		serial0 = &uart0;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	reserved-memory {
++		#address-cells = <1>;
++		#size-cells = <1>;
++		ranges;
++
++		virtqueue0desc@8fc00000 {
++			no-map;
++			reg = <0x8fc00000 0x10000>;
++		};
++
++		rtos_reserved: rtos@8fe00000 {
++			no-map;
++			reg = <0x8fe00000 0x200000>;
++		};
++	};
++
++	rpmsg {
++		compatible = "cvitek,rpmsg";
++		vdev-nums = <1>;
++		reg = <0x8fc00000 0x10000>;
++		reg-names = "desc_region";
++		status = "okay";
++	};
++
++	rproc {
++		compatible = "cvi,sg2002-rproc";
++		reg = <0x8fe00000 0x200000>;
++		resets = <&rst RST_CPUSYS2>;
++		reset-names = "c906l";
++		firmware-name = "cvirtos.elf";
++		status = "okay";
++	};
++
++	rtos_cmdqu {
++		compatible = "cvitek,rtos_cmdqu";
++		reg = <0x01900000 0x1000>;
++		reg-names = "mailbox";
++		interrupt-parent = <&plic>;
++		interrupts = <SOC_PERIPHERAL_IRQ(85) IRQ_TYPE_LEVEL_HIGH>;
++		interrupt-names = "mailbox";
++		status = "okay";
++	};
++};
++
++&osc {
++	clock-frequency = <25000000>;
++};
++
++&pinctrl {
++	uart0_cfg: uart0-cfg {
++		uart0-pins {
++			pinmux = <PINMUX(PIN_UART0_TX, 0)>,
++				 <PINMUX(PIN_UART0_RX, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++
++	sdhci0_cfg: sdhci0-cfg {
++		sdhci0-clk-pins {
++			pinmux = <PINMUX(PIN_SD0_CLK, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <16100>;
++			power-source = <3300>;
++		};
++
++		sdhci0-cmd-pins {
++			pinmux = <PINMUX(PIN_SD0_CMD, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++
++		sdhci0-data-pins {
++			pinmux = <PINMUX(PIN_SD0_D0, 0)>,
++				 <PINMUX(PIN_SD0_D1, 0)>,
++				 <PINMUX(PIN_SD0_D2, 0)>,
++				 <PINMUX(PIN_SD0_D3, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++};
++
++&sdhci0 {
++	pinctrl-0 = <&sdhci0_cfg>;
++	pinctrl-names = "default";
++	status = "okay";
++	bus-width = <4>;
++	no-1-8-v;
++	no-mmc;
++	no-sdio;
++	disable-wp;
++};
++
++&uart0 {
++	pinctrl-0 = <&uart0_cfg>;
++	pinctrl-names = "default";
++	status = "okay";
++};
++
++&usb {
++	dr_mode = "host";
++	status = "okay";
++};
+diff --git a/arch/riscv/configs/defconfig b/arch/riscv/configs/defconfig
+index c2c37327b987..9d6d99fc7448 100644
+--- a/arch/riscv/configs/defconfig
++++ b/arch/riscv/configs/defconfig
+@@ -307,3 +307,8 @@ CONFIG_DEBUG_KERNEL=y
+ CONFIG_DEBUG_FS=y
+ # CONFIG_RUNTIME_TESTING_MENU is not set
+ CONFIG_MEMTEST=y
++CONFIG_REMOTEPROC=y
++CONFIG_REMOTEPROC_CDEV=y
++CONFIG_CVI_SG2002_C906L_REMOTEPROC=y
++CONFIG_CVI_RTOS_CMDQU=y
++CONFIG_RPMSG_CVI_SHMEM=y
+diff --git a/drivers/remoteproc/Kconfig b/drivers/remoteproc/Kconfig
+index ee54436fea5a..f977f2388292 100644
+--- a/drivers/remoteproc/Kconfig
++++ b/drivers/remoteproc/Kconfig
+@@ -23,6 +23,13 @@ config REMOTEPROC_CDEV
+ 
+ 	  It's safe to say N if you don't want to use this interface.
+ 
++config CVI_SG2002_C906L_REMOTEPROC
++	tristate "CVI SG2002 C906L remoteproc support"
++	depends on ARCH_SOPHGO || COMPILE_TEST
++	help
++	  Say y here to control the SG2002 C906L coprocessor through the
++	  Linux remoteproc framework.
++
+ config IMX_REMOTEPROC
+ 	tristate "i.MX remoteproc support"
+ 	depends on ARCH_MXC
+diff --git a/drivers/remoteproc/Makefile b/drivers/remoteproc/Makefile
+index 1c7598b8475d..167cb93bf979 100644
+--- a/drivers/remoteproc/Makefile
++++ b/drivers/remoteproc/Makefile
+@@ -40,3 +40,4 @@ obj-$(CONFIG_TI_K3_DSP_REMOTEPROC)	+= ti_k3_dsp_remoteproc.o ti_k3_common.o
+ obj-$(CONFIG_TI_K3_M4_REMOTEPROC)	+= ti_k3_m4_remoteproc.o ti_k3_common.o
+ obj-$(CONFIG_TI_K3_R5_REMOTEPROC)	+= ti_k3_r5_remoteproc.o ti_k3_common.o
+ obj-$(CONFIG_XLNX_R5_REMOTEPROC)	+= xlnx_r5_remoteproc.o
++obj-$(CONFIG_CVI_SG2002_C906L_REMOTEPROC) += cvi_sg2002_c906l_remoteproc.o
+diff --git a/drivers/remoteproc/cvi_sg2002_c906l_remoteproc.c b/drivers/remoteproc/cvi_sg2002_c906l_remoteproc.c
+new file mode 100644
+index 000000000000..fa6e62d67ff1
+--- /dev/null
++++ b/drivers/remoteproc/cvi_sg2002_c906l_remoteproc.c
+@@ -0,0 +1,174 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * ST's Remote Processor Control Driver
++ *
++ * Copyright (C) 2015 STMicroelectronics - All Rights Reserved
++ *
++ * Author: Ludovic Barre <ludovic.barre@st.com>
++ *
++ * Copyright (C) 2025 CHIANG,KUAN-TING - All Rights Reserved
++ *
++ * Author: CHIANG,KUAN-TING <n96121210@gs.ncku.edu.tw>
++ */
++
++#include <linux/clk.h>
++#include <linux/err.h>
++#include <linux/interrupt.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_device.h>
++#include <linux/of_reserved_mem.h>
++#include <linux/platform_device.h>
++#include <linux/printk.h>
++#include <linux/regmap.h>
++#include <linux/remoteproc.h>
++#include <linux/reset.h>
++#include "remoteproc_internal.h"
++
++struct cvi_rproc {
++	struct reset_control	*reset;
++};
++
++static void __iomem *reg_base;
++
++static int cvi_rproc_start(struct rproc *rproc)
++{
++	struct cvi_rproc *ddata = rproc->priv;
++	int err;
++
++	err = reset_control_deassert(ddata->reset);
++	if (err) {
++		dev_err(&rproc->dev, "Failed to deassert Power Reset\n");
++		return err;
++	}
++
++	dev_info(&rproc->dev, "Started from 0x%llx\n", rproc->bootaddr);
++
++	return 0;
++}
++
++static int cvi_rproc_stop(struct rproc *rproc)
++{
++	struct cvi_rproc *ddata = rproc->priv;
++	int sw_err = 0, pwr_err = 0;
++
++	pwr_err = reset_control_assert(ddata->reset);
++	if (pwr_err)
++		dev_err(&rproc->dev, "Failed to assert Power Reset\n");
++
++	return sw_err ?: pwr_err;
++}
++
++static void *cvi_rproc_da_to_va(struct rproc *rproc, u64 da, size_t len,
++				       bool *is_iomem)
++{
++	if (is_iomem)
++		*is_iomem = true;
++
++	return (__force void *)reg_base;
++}
++
++static const struct rproc_ops cvi_rproc_ops = {
++	.start			= cvi_rproc_start,
++	.stop			= cvi_rproc_stop,
++	.da_to_va		= cvi_rproc_da_to_va,
++};
++
++static const struct of_device_id cvi_rproc_match[] = {
++	{ .compatible = "cvi,sg2002-rproc", .data = NULL },
++	{},
++};
++MODULE_DEVICE_TABLE(of, cvi_rproc_match);
++
++static int cvi_rproc_parse_dt(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct rproc *rproc = platform_get_drvdata(pdev);
++	struct cvi_rproc *ddata = rproc->priv;
++
++	ddata->reset = devm_reset_control_get_exclusive(dev, NULL);
++	if (IS_ERR(ddata->reset)) {
++		dev_err(dev, "Failed to get Power Reset\n");
++		return PTR_ERR(ddata->reset);
++	}
++
++	return 0;
++}
++
++static int cvi_rproc_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct cvi_rproc *ddata;
++	struct device_node *np = dev->of_node;
++	struct resource *res;
++	struct rproc *rproc;
++	const char *fw_name = NULL;
++	int ret;
++
++	of_property_read_string(np, "firmware-name", &fw_name);
++	rproc = rproc_alloc(dev, np->name, &cvi_rproc_ops, fw_name, sizeof(*ddata));
++	if (!rproc) {
++		return -ENOMEM;
++	}
++		
++	rproc->has_iommu = false;
++	/* Baseline cvirtos.elf has no remoteproc resource table. */
++	rproc->ops->parse_fw = NULL;
++	rproc->ops->find_loaded_rsc_table = NULL;
++	ddata = rproc->priv;
++
++	platform_set_drvdata(pdev, rproc);
++
++	ret = cvi_rproc_parse_dt(pdev);
++	if (ret) {
++		goto free_rproc;
++	}
++	
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!res) {
++		ret = -ENODEV;
++		goto free_rproc;
++	}
++
++	reg_base = devm_ioremap_resource(dev, res);
++	if (IS_ERR(reg_base)) {
++		ret = PTR_ERR(reg_base);
++		goto free_rproc;
++	}
++	rproc->auto_boot = false;
++
++	ret = rproc_add(rproc);
++	if (ret) {
++		goto free_rproc;
++	}
++		
++	return 0;
++
++free_rproc:
++	rproc_free(rproc);
++	return ret;
++}
++
++static void cvi_rproc_remove(struct platform_device *pdev)
++{
++	struct rproc *rproc = platform_get_drvdata(pdev);
++
++	rproc_del(rproc);   
++	rproc_free(rproc);
++}
++
++static struct platform_driver cvi_rproc_driver = {
++	.probe = cvi_rproc_probe,
++	.remove = cvi_rproc_remove,
++	.driver = {
++		.name = "cvi-rproc",
++		.of_match_table = of_match_ptr(cvi_rproc_match),
++	},
++};
++module_platform_driver(cvi_rproc_driver);
++
++MODULE_DESCRIPTION("CVI Remote Processor Control Driver");
++MODULE_AUTHOR("CHIANG,KUAN-TING <n96121210@gs.ncku.edu.tw>");
++MODULE_LICENSE("GPL v2");
+diff --git a/drivers/rpmsg/Kconfig b/drivers/rpmsg/Kconfig
+index d3795860f5c0..6accb9455428 100644
+--- a/drivers/rpmsg/Kconfig
++++ b/drivers/rpmsg/Kconfig
+@@ -74,6 +74,16 @@ config RPMSG_QCOM_SMD
+ 	  providing communication channels to remote processors in Qualcomm
+ 	  platforms.
+ 
++config RPMSG_CVI_SHMEM
++	tristate "CVI shared-memory RPMsg transport"
++	depends on HAS_IOMEM
++	depends on CVI_RTOS_CMDQU
++	select RPMSG
++	select RPMSG_VIRTIO
++	help
++	  Say y here to expose the SG2002 C906L shared-memory virtio RPMsg
++	  transport used by the Milk-V Duo firmware.
++
+ config RPMSG_VIRTIO
+ 	tristate "Virtio RPMSG bus driver"
+ 	depends on HAS_DMA
+diff --git a/drivers/rpmsg/Makefile b/drivers/rpmsg/Makefile
+index 1e02b58ff61f..d05555b7ce0f 100644
+--- a/drivers/rpmsg/Makefile
++++ b/drivers/rpmsg/Makefile
+@@ -11,3 +11,4 @@ obj-$(CONFIG_RPMSG_QCOM_GLINK_RPM) += qcom_glink_rpm.o
+ obj-$(CONFIG_RPMSG_QCOM_GLINK_SMEM) += qcom_glink_smem.o
+ obj-$(CONFIG_RPMSG_QCOM_SMD)	+= qcom_smd.o
+ obj-$(CONFIG_RPMSG_VIRTIO)	+= virtio_rpmsg_bus.o
++obj-$(CONFIG_RPMSG_CVI_SHMEM) += cvi_rpmsg_shmem.o
+diff --git a/drivers/rpmsg/cvi_rpmsg_shmem.c b/drivers/rpmsg/cvi_rpmsg_shmem.c
+new file mode 100644
+index 000000000000..ee53a3999841
+--- /dev/null
++++ b/drivers/rpmsg/cvi_rpmsg_shmem.c
+@@ -0,0 +1,400 @@
++/*
++ * Copyright (C) 2015 Freescale Semiconductor, Inc.
++ * Copyright 2017 NXP
++ *
++ * derived from the omap-rpmsg implementation.
++ *
++ * The code contained herein is licensed under the GNU General Public
++ * License. You may obtain a copy of the GNU General Public License
++ * Version 2 or later at the following locations:
++ *
++ * http://www.opensource.org/licenses/gpl-license.html
++ * http://www.gnu.org/copyleft/gpl.html
++ *
++ *
++ * Copyright (C) CHIANG,KUAN-TING <n96121210@gs.ncku.edu.tw>
++ *
++ *
++ */
++
++#include <linux/clk.h>
++#include <linux/err.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_device.h>
++#include <linux/of_irq.h>
++#include <linux/platform_device.h>
++#include <linux/rpmsg.h>
++#include <linux/slab.h>
++#include <linux/virtio.h>
++#include <linux/virtio_config.h>
++#include <linux/virtio_ids.h>
++#include <linux/virtio_ring.h>
++#include <asm/io.h>
++#include <asm-generic/io.h>
++#include <linux/miscdevice.h>
++#include "rtos_cmdqu.h"
++
++struct cvi_virdev {
++	struct virtio_device vdev;
++	unsigned int vring[2];
++	struct virtqueue *vq[2];
++	int base_vq_id;
++	int num_of_vqs;
++};
++
++struct cvi_rpmsg_vproc {
++	char *rproc_name;
++	struct mutex lock;
++	int vdev_nums;
++#define MAX_VDEV_NUMS	7
++	struct cvi_virdev ivdev[MAX_VDEV_NUMS];
++};
++
++static struct delayed_work rpmsg_work;
++struct virtio_device *vdev_isr = NULL;
++
++static void __iomem *reg_base;
++volatile struct mailbox_set_register __iomem *mbox_reg_rpmsg;
++volatile unsigned long __iomem *mailbox_context_rpmsg; // mailbox buffer context is 64 Bytess
++#define MAILBOX_CONTEXT_OFFSET  0x0400
++/*
++ * For now, allocate 256 buffers of 512 bytes for each side. each buffer
++ * will then have 16B for the msg header and 496B for the payload.
++ * This will require a total space of 256KB for the buffers themselves, and
++ * 3 pages for every vring (the size of the vring depends on the number of
++ * buffers it supports).
++ */
++#define RPMSG_NUM_BUFS		(256)
++#define RPMSG_BUF_SIZE		(512)
++#define MAX_NUM 10	/* enlarge it if overflow happen */
++/*
++ * The alignment between the consumer and producer parts of the vring.
++ * Note: this is part of the "wire" protocol. If you change this, you need
++ * to update your BIOS image as well
++ */
++#define RPMSG_VRING_ALIGN	(4096)
++
++/* With 256 buffers, our vring will occupy 3 pages */
++#define RPMSG_RING_SIZE	((DIV_ROUND_UP(vring_size(RPMSG_NUM_BUFS, \
++				RPMSG_VRING_ALIGN), PAGE_SIZE)) * PAGE_SIZE)
++
++#define to_cvi_virdev(vd) container_of(vd, struct cvi_virdev, vdev)
++#define to_cvi_rpdev(vd, id) container_of(vd, struct cvi_rpmsg_vproc, ivdev[id])
++
++
++struct cvi_rpmsg_vq_info {
++	__u16 num;	/* number of entries in the virtio_ring */
++	__u16 vq_id;	/* a globaly unique index of this virtqueue */
++	__u16 simple_id;
++	void *addr;	/* address where we mapped the virtio ring */
++	struct cvi_rpmsg_vproc *rpdev;
++};
++
++static u64 cvi_rpmsg_get_features(struct virtio_device *vdev)
++{
++	/* VIRTIO_RPMSG_F_NS has been made private */
++	return 1 << 0;
++}
++
++static int cvi_rpmsg_finalize_features(struct virtio_device *vdev)
++{
++	/* Give virtio_ring a chance to accept features */
++	vring_transport_features(vdev);
++	return 0;
++}
++
++/* kick the remote processor, and let it know which virtqueue to poke at */
++static bool cvi_rpmsg_notify(struct virtqueue *vq)
++{
++	unsigned int mu_rpmsg = 0;
++	struct cvi_rpmsg_vq_info *rpvq = vq->priv;
++
++	int queue_id = rpvq->simple_id;
++	mu_rpmsg = rpvq->vq_id << 16;
++	mutex_lock(&rpvq->rpdev->lock);
++
++	/* send the index of the triggered virtqueue as the mu payload */
++	struct cmdqu_t cmd = {0};
++    cmd.param_ptr = mu_rpmsg;
++	cmd.cmd_id = queue_id;
++	rtos_cmdqu_send(&cmd);
++
++	mutex_unlock(&rpvq->rpdev->lock);
++
++	return true;
++}
++
++static struct virtqueue *rp_find_vq(struct virtio_device *vdev,
++				    unsigned int index,
++				    void (*callback)(struct virtqueue *vq),
++				    const char *name, bool ctx)
++{
++	struct cvi_virdev *virdev = to_cvi_virdev(vdev);
++	struct cvi_rpmsg_vproc *rpdev = to_cvi_rpdev(virdev,
++						     virdev->base_vq_id / 2);
++	struct cvi_rpmsg_vq_info *rpvq;
++	struct virtqueue *vq;
++	int err;
++
++	rpvq = kmalloc(sizeof(*rpvq), GFP_KERNEL);
++	if (!rpvq) {
++		pr_err("no more memory %d\n", -ENOMEM);
++		return ERR_PTR(-ENOMEM);
++	}
++		
++	rpvq->addr = (__force void *) ioremap(virdev->vring[index],
++	 						RPMSG_RING_SIZE);
++
++	if (!rpvq->addr) {
++		err = -ENOMEM;
++		pr_err("no more memory %d\n", err);
++		goto free_rpvq;
++	}
++
++	memset(rpvq->addr, 0, RPMSG_RING_SIZE);
++
++	vq = vring_new_virtqueue(index, RPMSG_NUM_BUFS/*2*/, RPMSG_VRING_ALIGN,
++			vdev, true, ctx, rpvq->addr, cvi_rpmsg_notify, callback,
++			name);
++	if (!vq) {
++		pr_err("vring_new_virtqueue failed\n");
++		err = -ENOMEM;
++		goto unmap_vring;
++	}
++
++	virdev->vq[index] = vq;
++	vq->priv = rpvq;
++	/* system-wide unique id for this virtqueue */
++	rpvq->vq_id = virdev->base_vq_id + index;
++	rpvq->rpdev = rpdev;
++	rpvq->simple_id = index;
++	mutex_init(&rpdev->lock);
++
++	return vq;
++
++unmap_vring:
++	/* iounmap normal memory, so make sparse happy */
++	iounmap((__force void __iomem *) rpvq->addr);
++free_rpvq:
++	kfree(rpvq);
++	return ERR_PTR(err);
++}
++
++static void cvi_rpmsg_del_vqs(struct virtio_device *vdev)
++{
++	struct virtqueue *vq, *n;
++	list_for_each_entry_safe(vq, n, &vdev->vqs, list) {
++		struct cvi_rpmsg_vq_info *rpvq = vq->priv;
++
++		iounmap(rpvq->addr);
++		vring_del_virtqueue(vq);
++		kfree(rpvq);
++	}
++}
++
++static int cvi_rpmsg_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
++			struct virtqueue *vqs[],
++			struct virtqueue_info vqs_info[],
++			struct irq_affinity *desc)
++{
++	struct cvi_virdev *virdev = to_cvi_virdev(vdev);
++	int i, err;
++
++	/* we maintain two virtqueues per remote processor (for RX and TX) */
++	if (nvqs != 2)
++		return -EINVAL;
++
++	for (i = 0; i < nvqs; ++i) {
++		vqs[i] = rp_find_vq(vdev, i, vqs_info[i].callback,
++					    vqs_info[i].name, vqs_info[i].ctx);
++		if (IS_ERR(vqs[i])) {
++			err = PTR_ERR(vqs[i]);
++			goto error;
++		}
++	}
++	virdev->num_of_vqs = nvqs;
++	return 0;
++
++error:
++	cvi_rpmsg_del_vqs(vdev);
++	return err;
++}
++
++static void cvi_rpmsg_reset(struct virtio_device *vdev)
++{
++	dev_dbg(&vdev->dev, "reset !\n");
++}
++
++static u8 cvi_rpmsg_get_status(struct virtio_device *vdev)
++{
++	return 0;
++}
++
++static void cvi_rpmsg_set_status(struct virtio_device *vdev, u8 status)
++{
++	dev_dbg(&vdev->dev, "%s new status: %d\n", __func__, status);
++}
++
++static void cvi_rpmsg_vproc_release(struct device *dev)
++{
++	/* this handler is provided so driver core doesn't yell at us */
++}
++
++static struct virtio_config_ops cvi_rpmsg_config_ops = {
++	.get_features	= cvi_rpmsg_get_features,
++	.finalize_features = cvi_rpmsg_finalize_features,
++	.find_vqs	= cvi_rpmsg_find_vqs,
++	.del_vqs	= cvi_rpmsg_del_vqs,
++	.reset		= cvi_rpmsg_reset,
++	.set_status	= cvi_rpmsg_set_status,
++	.get_status	= cvi_rpmsg_get_status,
++};
++
++static struct cvi_rpmsg_vproc cvi_rpmsg_vprocs[] = {
++	{
++		.rproc_name	= "c906l",
++	},
++};
++
++static const struct of_device_id cvi_rpmsg_dt_ids[] = {
++	{ .compatible = "cvitek,rpmsg",},
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, cvi_rpmsg_dt_ids);
++
++static int set_vring_phy_buf(struct platform_device *pdev,
++		       struct cvi_rpmsg_vproc *rpdev, int vdev_nums)
++{
++	struct resource *res;
++	resource_size_t size;
++	unsigned int start, end;
++	int i, ret = 0;
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (res) {
++		size = resource_size(res);
++		start = res->start;
++		end = res->start + size;
++		for (i = 0; i < vdev_nums; i++) {
++			rpdev->ivdev[i].vring[0] = start;
++			rpdev->ivdev[i].vring[1] = start +
++						   0x8000;
++			start += 0x10000;
++			if (start > end) {
++				pr_err("Too small memory size %x!\n",
++						(u32)size);
++				ret = -EINVAL;
++				break;
++			}
++		}
++	} else {
++		return -ENOMEM;
++	}
++
++	return ret;
++}
++
++static volatile int rtos_cmd_id;
++
++static void rpmsg_work_handler(struct work_struct *work)
++{
++	// virtqueue callback
++	struct cvi_virdev *cvi_virdev_inst = container_of(vdev_isr, struct cvi_virdev, vdev);
++	cvi_virdev_inst->vq[rtos_cmd_id]->callback(cvi_virdev_inst->vq[rtos_cmd_id]);
++}
++
++static void rtos_cmdqu_handler(unsigned char cmd_id, unsigned int param_ptr, void* device_id)
++{
++	rtos_cmd_id = cmd_id;
++	schedule_delayed_work(&rpmsg_work, 0);
++}
++
++static int cvi_rpmsg_probe(struct platform_device *pdev)
++{
++	int i, j, ret = 0;
++	struct device_node *np = pdev->dev.of_node;
++
++	mbox_reg_rpmsg = (struct mailbox_set_register __iomem *)reg_base;
++	mailbox_context_rpmsg = (unsigned long __iomem *)(reg_base + MAILBOX_CONTEXT_OFFSET);
++	INIT_DELAYED_WORK(&rpmsg_work, rpmsg_work_handler);
++
++	for (i = 0; i < ARRAY_SIZE(cvi_rpmsg_vprocs); i++) {
++		struct cvi_rpmsg_vproc *rpdev = &cvi_rpmsg_vprocs[i];
++
++		ret = of_property_read_u32_index(np, "vdev-nums", i,
++			&rpdev->vdev_nums);
++		if (ret)
++			rpdev->vdev_nums = 1;
++		if (rpdev->vdev_nums > MAX_VDEV_NUMS) {
++			pr_err("vdev-nums exceed the max %d\n", MAX_VDEV_NUMS);
++			return -EINVAL;
++		}
++
++		if (!strcmp(rpdev->rproc_name, "c906l")) {
++			ret = set_vring_phy_buf(pdev, rpdev,
++						rpdev->vdev_nums);
++			if (ret) {
++				pr_err("No vring buffer.\n");
++				return -ENOMEM;
++			}
++		} else {
++			pr_err("No remote c906l processor.\n");
++			return -ENODEV;
++		}
++
++		for (j = 0; j < rpdev->vdev_nums; j++) {
++			pr_info("%s rpdev%d vdev%d: vring0 0x%x, vring1 0x%x\n",
++				 __func__, i, rpdev->vdev_nums,
++				 rpdev->ivdev[j].vring[0],
++				 rpdev->ivdev[j].vring[1]);
++			rpdev->ivdev[j].vdev.id.device = VIRTIO_ID_RPMSG;
++			rpdev->ivdev[j].vdev.config = &cvi_rpmsg_config_ops;
++			rpdev->ivdev[j].vdev.dev.parent = &pdev->dev;
++			rpdev->ivdev[j].vdev.dev.release = cvi_rpmsg_vproc_release;
++			rpdev->ivdev[j].base_vq_id = j * 2;
++
++			ret = register_virtio_device(&rpdev->ivdev[j].vdev);
++			if (ret) {
++				pr_err("%s failed to register rpdev: %d\n",
++						__func__, ret);
++				return ret;
++			}
++			vdev_isr = &rpdev->ivdev[j].vdev;
++		}
++	}
++
++	int err = request_rtos_irq(0, rtos_cmdqu_handler, pdev->name, &pdev->id);
++	if (err) {
++		pr_err("fail to register interrupt handler: %d \n", err);
++		return -1;
++	}
++
++	return ret;
++}
++
++static struct platform_driver cvi_rpmsg_driver = {
++	.driver = {
++		   .name = "cvi-rpmsg",
++		   .of_match_table = cvi_rpmsg_dt_ids,
++		   },
++	.probe = cvi_rpmsg_probe,
++};
++
++static int __init cvi_rpmsg_init(void)
++{
++	int ret;
++	ret = platform_driver_register(&cvi_rpmsg_driver);
++	if (ret)
++		pr_err("Unable to initialize rpmsg driver\n");
++
++	return ret;
++}
++
++MODULE_AUTHOR("CHIANG,KUAN-TING <n96121210@gs.ncku.edu.tw>");
++MODULE_DESCRIPTION("cvi remote processor messaging virtio device");
++MODULE_LICENSE("GPL v2");
++late_initcall(cvi_rpmsg_init);
+diff --git a/drivers/rpmsg/rtos_cmdqu.h b/drivers/rpmsg/rtos_cmdqu.h
+new file mode 100644
+index 000000000000..127fe587cbd3
+--- /dev/null
++++ b/drivers/rpmsg/rtos_cmdqu.h
+@@ -0,0 +1,33 @@
++#ifndef __RTOS_COMMAND_QUEUE__
++#define __RTOS_COMMAND_QUEUE__
++
++#ifdef __linux__
++#include <linux/kernel.h>
++#endif
++
++struct valid_t {
++	unsigned char linux_valid;
++	unsigned char rtos_valid;
++} __attribute__((packed));
++
++typedef union resv_t {
++	struct valid_t valid;
++	unsigned short mstime; // 0 : noblock, -1 : block infinite
++} resv_t;
++
++typedef struct cmdqu_t cmdqu_t;
++/* cmdqu size should be 8 bytes because of mailbox buffer size */
++struct cmdqu_t {
++	unsigned char ip_id;
++	unsigned char cmd_id : 7;
++	unsigned char block : 1;
++	union resv_t resv;
++	unsigned int  param_ptr;
++} __attribute__((packed)) __attribute__((aligned(0x8)));
++
++int rtos_cmdqu_send(cmdqu_t *cmdq);
++int rtos_cmdqu_send_wait(cmdqu_t *cmdq, int wait_cmd_id);
++int request_rtos_irq(unsigned char ip_id, void *handler, const char *devname, void *dev_id);
++int free_rtos_irq(unsigned char ip_id);
++
++#endif  // end of __RTOS_COMMAND_QUEUE__
+\ No newline at end of file
+diff --git a/drivers/soc/Kconfig b/drivers/soc/Kconfig
+index a2d65adffb80..720c278d1b4a 100644
+--- a/drivers/soc/Kconfig
++++ b/drivers/soc/Kconfig
+@@ -8,6 +8,7 @@ source "drivers/soc/atmel/Kconfig"
+ source "drivers/soc/bcm/Kconfig"
+ source "drivers/soc/canaan/Kconfig"
+ source "drivers/soc/cirrus/Kconfig"
++source "drivers/soc/cvitek/Kconfig"
+ source "drivers/soc/fsl/Kconfig"
+ source "drivers/soc/fujitsu/Kconfig"
+ source "drivers/soc/hisilicon/Kconfig"
+diff --git a/drivers/soc/Makefile b/drivers/soc/Makefile
+index c9e689080ceb..e0b730c20487 100644
+--- a/drivers/soc/Makefile
++++ b/drivers/soc/Makefile
+@@ -9,6 +9,7 @@ obj-$(CONFIG_ARCH_AT91)		+= atmel/
+ obj-y				+= bcm/
+ obj-$(CONFIG_ARCH_CANAAN)	+= canaan/
+ obj-$(CONFIG_EP93XX_SOC)        += cirrus/
++obj-y				+= cvitek/
+ obj-$(CONFIG_ARCH_DOVE)		+= dove/
+ obj-$(CONFIG_MACH_DOVE)		+= dove/
+ obj-y				+= fsl/
+diff --git a/drivers/soc/cvitek/Kconfig b/drivers/soc/cvitek/Kconfig
+new file mode 100644
+index 000000000000..9528fbfd6b14
+--- /dev/null
++++ b/drivers/soc/cvitek/Kconfig
+@@ -0,0 +1,12 @@
++# SPDX-License-Identifier: GPL-2.0-only
++menu "CVITEK SoC drivers"
++
++config CVI_RTOS_CMDQU
++	tristate "CVI RTOS command queue mailbox"
++	depends on ARCH_SOPHGO || COMPILE_TEST
++	depends on HAS_IOMEM
++	help
++	  Say y here to enable the SG2002 mailbox command queue used to
++	  exchange notifications with the C906L firmware.
++
++endmenu
+diff --git a/drivers/soc/cvitek/Makefile b/drivers/soc/cvitek/Makefile
+new file mode 100644
+index 000000000000..1636c2cb75cd
+--- /dev/null
++++ b/drivers/soc/cvitek/Makefile
+@@ -0,0 +1,4 @@
++# SPDX-License-Identifier: GPL-2.0
++obj-$(CONFIG_CVI_RTOS_CMDQU) += rtos_cmdqu/rtos_cmdqu.o \
++	rtos_cmdqu/cvi_spinlock.o \
++	rtos_cmdqu/rtos_cmdqu_cb.o
+diff --git a/drivers/soc/cvitek/rtos_cmdqu/base_cb.h b/drivers/soc/cvitek/rtos_cmdqu/base_cb.h
+new file mode 100644
+index 000000000000..6869074529a4
+--- /dev/null
++++ b/drivers/soc/cvitek/rtos_cmdqu/base_cb.h
+@@ -0,0 +1,50 @@
++#ifndef __BASE_CB_H__
++#define __BASE_CB_H__
++
++#ifdef __cplusplus
++	extern "C" {
++#endif
++
++#define IDTOSTR(X) (X < E_MODULE_BUTT) ? CB_MOD_STR[X] : "UNDEF" \
++
++#define CB_FOREACH_MOD(MOD) {	\
++		MOD(BASE)	\
++		MOD(SYS)	\
++		MOD(CIF)	\
++		MOD(SNSR_I2C)	\
++		MOD(VI)		\
++		MOD(VPSS)	\
++		MOD(VO)		\
++		MOD(DWA)	\
++		MOD(RGN)	\
++		MOD(AVS)	\
++		MOD(VCODEC)	\
++		MOD(RTOS_CMDQU)	\
++		MOD(FB)		\
++		MOD(BUTT)	\
++	}
++
++#define CB_GENERATE_STRING(STRING) (#STRING),
++#define CB_GENERATE_ENUM(ENUM) E_MODULE_##ENUM,
++
++enum ENUM_MODULES_ID CB_FOREACH_MOD(CB_GENERATE_ENUM);
++extern const char * const CB_MOD_STR[];
++
++struct base_m_cb_info {
++	enum ENUM_MODULES_ID module_id;
++	void *dev;
++	int (*cb)(void *dev, enum ENUM_MODULES_ID caller, u32 cmd, void *arg);
++};
++
++struct base_exe_m_cb {
++	enum ENUM_MODULES_ID caller;
++	enum ENUM_MODULES_ID callee;
++	u32  cmd_id;
++	void *data;
++};
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* __BASE_CB_H__ */
+diff --git a/drivers/soc/cvitek/rtos_cmdqu/cmdqu_cb.h b/drivers/soc/cvitek/rtos_cmdqu/cmdqu_cb.h
+new file mode 100644
+index 000000000000..c8985afb5919
+--- /dev/null
++++ b/drivers/soc/cvitek/rtos_cmdqu/cmdqu_cb.h
+@@ -0,0 +1,26 @@
++#ifndef __CMDQU_CB_H__
++#define __CMDQU_CB_H__
++
++#ifdef __cplusplus
++	extern "C" {
++#endif
++
++enum CMDQU_CB_CMD {
++	CMDQU_CB_RGN_COMPRESS,
++	CMDQU_CB_RGN_GET_COMPRESS_SIZE,
++	CMDQU_CB_RGN_COMPRESS_DONE,
++	CMDQU_CB_MAX
++};
++
++struct cmdqu_rgn_cb_param {
++	unsigned int u32RgnCmprParamPAddr;
++	unsigned char u8CmdId;
++	bool bStatus;
++};
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* __CMDQU_CB_H__ */
++
+diff --git a/drivers/soc/cvitek/rtos_cmdqu/cvi_mailbox.h b/drivers/soc/cvitek/rtos_cmdqu/cvi_mailbox.h
+new file mode 100644
+index 000000000000..113c419fda38
+--- /dev/null
++++ b/drivers/soc/cvitek/rtos_cmdqu/cvi_mailbox.h
+@@ -0,0 +1,89 @@
++#ifndef __CVI_MAILBOX_H__
++#define __CVI_MAILBOX_H__
++
++union cpu_mailbox_info_offset{
++	char mbox_info;
++	int reserved;
++};
++
++union cpu_mailbox_int_clr_offset{
++	char mbox_int_clr;
++	int reserved;
++};
++union cpu_mailbox_int_mask_offset{
++	char mbox_int_mask;
++	int reserved;
++};
++union cpu_mailbox_int_offset{
++	char mbox_int;
++	int reserved;
++};
++union cpu_mailbox_int_raw_offset{
++	char mbox_int_raw;
++	int reserved;
++};
++
++union mailbox_set{
++	char mbox_set;
++	int reserved;
++};
++union mailbox_status{
++	char mbox_status;
++	int reserved;
++};
++
++union cpu_mailbox_status{
++	char mbox_status;
++	int reserved;
++};
++
++/* register mapping refers to mailbox user guide*/
++struct cpu_mbox_int{
++	union cpu_mailbox_int_clr_offset  cpu_mbox_int_clr;
++	union cpu_mailbox_int_mask_offset cpu_mbox_int_mask;
++	union cpu_mailbox_int_offset      cpu_mbox_int_int;
++	union cpu_mailbox_int_raw_offset  cpu_mbox_int_raw;
++};
++
++struct mailbox_set_register{
++	union  cpu_mailbox_info_offset cpu_mbox_en[4];      //0x00, 0x04, 0x08, 0x0c
++	struct cpu_mbox_int cpu_mbox_set[4];                //0x10~0x1C, 0x20~0x2C, 0x30~0x3C, 0x40~0x4C
++	int    reserved[4];                                 //0x50~0x5C
++	union  mailbox_set mbox_set;                        //0x60
++	union  mailbox_status mbox_status;                  //0x64
++	int    reserved2[2];                                //0x68~0x6C
++	union  cpu_mailbox_status cpu_mbox_status[4];       //0x70
++};
++
++struct mailbox_done_register{
++	union  cpu_mailbox_info_offset cpu_mbox_done_en[4];
++	struct cpu_mbox_int cpu_mbox_done[4];
++};
++
++volatile struct mailbox_set_register *mbox_reg;
++volatile struct mailbox_done_register *mbox_done_reg;
++volatile unsigned long *mailbox_context; // mailbox buffer context is 64 Bytess
++
++#define MAILBOX_MAX_NUM         0x0008
++#define MAILBOX_DONE_OFFSET     0x0002
++#define MAILBOX_CONTEXT_OFFSET  0x0400
++
++#ifdef FREERTOS_BSP
++#define RECEIVE_CPU  2 // c906L
++#define SEND_TO_CPU1 1 // c906B
++#define SEND_TO_CPU0 0 // ca53
++#else
++// __linux__
++#ifdef __riscv
++// C906B
++#define RECEIVE_CPU  1
++#else
++// Ca53
++#define RECEIVE_CPU  0
++#endif
++// C906L
++#define SEND_TO_CPU  2
++#endif
++
++#endif // end of__CVI_MAILBOX_H__
++
+diff --git a/drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.c b/drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.c
+new file mode 100644
+index 000000000000..5f891a394bf5
+--- /dev/null
++++ b/drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.c
+@@ -0,0 +1,161 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) Cvitek Co., Ltd. 2019-2022. All rights reserved.
++ *
++ * File Name: cvi_spinlock.c
++ * Description:
++ */
++
++#ifdef FREERTOS_BSP
++#include "cvi_spinlock.h"
++#include "arch_time.h"
++#include "core_rv64.h"
++#include "csi_rv64_gcc.h"
++#include "csr.h"
++#include "delay.h"
++#include "mmio.h"
++#include "stdint.h"
++#include "top_reg.h"
++#include "types.h"
++#else
++#include <linux/delay.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/of_reserved_mem.h>
++#include <linux/slab.h>
++#include <linux/time.h>
++#include <linux/uaccess.h>
++#include <linux/version.h>
++#include "cvi_spinlock.h"
++#endif
++
++#ifndef FREERTOS_BSP
++static unsigned long reg_base;
++#else
++static unsigned long reg_base = SPINLOCK_REG_BASE;
++#endif
++
++spinlock_t reg_write_lock;
++static unsigned char lockCount[SPIN_MAX+1] = {0};
++static void *__iomem c906l_pc_reg;
++
++void cvi_spinlock_init(void)
++{
++	spin_lock_init(&reg_write_lock);
++	c906l_pc_reg = ioremap(0x1901070, 4);
++	if (c906l_pc_reg == NULL) {
++		pr_err("c906l_pc_reg ioremap failed!\n");
++	}
++	pr_info("[%s] success\n", __func__);
++}
++
++void cvi_spinlock_uninit(void)
++{
++	iounmap(c906l_pc_reg);
++}
++
++void spinlock_base(unsigned long mb_base)
++{
++	reg_base = mb_base;
++}
++
++static inline int hw_spin_trylock(hw_raw_spinlock_t *lock)
++{
++#ifndef RISCV_QEMU
++	writew(lock->locks, (void *)(reg_base + sizeof(int) * lock->hw_field));
++	if (readw((void *)(reg_base + sizeof(int) * lock->hw_field)) == lock->locks)
++		return MAILBOX_LOCK_SUCCESS;
++	return MAILBOX_LOCK_FAILED;
++#else
++	return MAILBOX_LOCK_SUCCESS;
++#endif
++}
++
++int hw_spin_lock(hw_raw_spinlock_t *lock)
++{
++	u64 i;
++	u64 loops = 1000000;
++	hw_raw_spinlock_t _lock = {.hw_field = lock->hw_field, .locks=lock->locks};
++
++	if (lock->hw_field >= SPIN_LINUX_RTOS) {
++		unsigned long flags;
++		spin_lock_irqsave(&reg_write_lock, flags);
++		if (lockCount[lock->hw_field] == 0) {
++			lockCount[lock->hw_field]++;
++		}
++		_lock.locks = lockCount[lock->hw_field];
++		lockCount[lock->hw_field]++;
++		spin_unlock_irqrestore(&reg_write_lock, flags);
++	}
++	else {
++		//....
++	}
++	for (i = 0; i < loops; i++) {
++		if (hw_spin_trylock(&_lock) == MAILBOX_LOCK_SUCCESS)
++		{
++			lock->locks = _lock.locks;
++			return MAILBOX_LOCK_SUCCESS;
++		}
++		udelay(1);
++	}
++
++#ifdef FREERTOS_BSP
++	uart_puts("__spin_lock_debug fail\n");
++#else
++	pr_err("__spin_lock_debug fail! loops = %lld\n", loops);
++#endif
++	return MAILBOX_LOCK_FAILED;
++}
++
++int _hw_raw_spin_lock_irqsave(hw_raw_spinlock_t *lock)
++{
++	int flag = MAILBOX_LOCK_SUCCESS;
++
++#ifdef FREERTOS_BSP
++	// save and disable irq
++	flag = (__get_MSTATUS() & 8);
++	__disable_irq();
++#endif
++
++	// lock
++	if (hw_spin_lock(lock) == MAILBOX_LOCK_FAILED) {
++	#ifdef FREERTOS_BSP
++		// if spinlock fail , restore irq
++		if (flag) {
++			__enable_irq();
++		}
++	#endif
++		pr_err("spin lock fail! C906L pc = 0x%x,reg_val=0x%x, lock->locks=0x%x\n",
++			ioread32(c906l_pc_reg), readw((void *)(reg_base + sizeof(int) * lock->hw_field)), lock->locks);
++		return MAILBOX_LOCK_FAILED;
++	}
++	return flag;
++}
++
++void _hw_raw_spin_unlock_irqrestore(hw_raw_spinlock_t *lock, int flag)
++{
++#ifndef RISCV_QEMU
++	// unlock
++	if (readw((void *)(reg_base + sizeof(int) * lock->hw_field)) == lock->locks) {
++		writew(lock->locks, (void *)(reg_base + sizeof(int) * lock->hw_field));
++
++#ifdef FREERTOS_BSP
++		// restore irq
++		if (flag) {
++			__enable_irq();
++		}
++#endif
++	} else {
++#ifdef FREERTOS_BSP
++		uart_puts("spin unlock fail\n");
++#else
++		pr_err("spin unlock fail! C906L pc=0x%x,reg_val=0x%x, lock->locks=0x%x\n",
++			ioread32(c906l_pc_reg), readw((void *)(reg_base + sizeof(int) * lock->hw_field)), lock->locks);
++#endif
++	}
++#else
++	if (flag) {
++		__enable_irq();
++	}
++#endif
++}
+diff --git a/drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.h b/drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.h
+new file mode 100644
+index 000000000000..c6a35e532510
+--- /dev/null
++++ b/drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.h
+@@ -0,0 +1,43 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++#ifndef __DRV_SPINLOCK_H__
++#define __DRV_SPINLOCK_H__
++
++enum SPINLOCK_FIELD {
++	SPIN_UART,
++	SPIN_LINUX_RTOS = 4,  // this spinlock field is used for linux & rtos
++	SPIN_MBOX = SPIN_LINUX_RTOS,
++	SPIN_MAX = 7,
++};
++
++typedef struct hw_raw_spinlock {
++	unsigned short locks;
++	unsigned short hw_field;
++} hw_raw_spinlock_t;
++
++#define MAILBOX_LOCK_SUCCESS 1
++#define MAILBOX_LOCK_FAILED  (-1)
++
++#define __CVI_ARCH_SPIN_LOCK_UNLOCKED \
++	(0)
++
++#define __CVI_RAW_SPIN_LOCK_INITIALIZER(spinlock_hw_field) \
++	{ .locks = __CVI_ARCH_SPIN_LOCK_UNLOCKED, .hw_field = spinlock_hw_field, }
++
++#define DEFINE_CVI_SPINLOCK(x, y) \
++	hw_raw_spinlock_t x = __CVI_RAW_SPIN_LOCK_INITIALIZER(y)
++
++int _hw_raw_spin_lock_irqsave(hw_raw_spinlock_t *lock);
++void _hw_raw_spin_unlock_irqrestore(hw_raw_spinlock_t *lock, int flag);
++
++#define drv_spin_lock_irqsave(lock, flags) \
++	{ flags = _hw_raw_spin_lock_irqsave(lock); }
++
++#define drv_spin_unlock_irqrestore(lock, flags) \
++	_hw_raw_spin_unlock_irqrestore(lock, flags)
++
++void spinlock_base(unsigned long mb_base);
++void cvi_spinlock_init(void);
++void cvi_spinlock_uninit(void);
++
++#endif  // end of __DRV_SPINLOCK_H__
+diff --git a/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c
+new file mode 100644
+index 000000000000..a7d7db5fb37e
+--- /dev/null
++++ b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c
+@@ -0,0 +1,642 @@
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/irqchip/arm-gic.h>
++#include <linux/platform_device.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/io.h>
++#include <linux/fs.h>
++#include <linux/ioctl.h>
++#include <linux/list.h>
++#include <linux/time.h>
++#include <linux/uaccess.h>
++#include <linux/version.h>
++#include <linux/of_reserved_mem.h>
++#include <linux/interrupt.h>
++#include <linux/slab.h>
++#include <linux/delay.h>
++
++#include "rtos_cmdqu.h"
++#include "cvi_mailbox.h"
++#include "cvi_spinlock.h"
++#include "base_cb.h"
++#include "cmdqu_cb.h"
++#include "rtos_cmdqu_cb.h"
++
++//#define pr_debug
++
++struct cvi_rtos_cmdqu_device {
++	struct device *dev;
++	struct miscdevice miscdev;
++};
++
++spinlock_t mailbox_queue_lock;
++spinlock_t send_queue_lock;
++#ifdef _LP64
++static __u64  reg_base;
++#else
++static __u32  reg_base;
++#endif
++static int mailbox_irq;
++
++static int cvi_rtos_cmdqu_open(struct inode *inode, struct file *file)
++{
++	return 0;
++}
++
++static int cvi_rtos_cmdqu_release(struct inode *inode, struct file *file)
++{
++	return 0;
++}
++
++struct rtos_cmdqu_wait_list_t {
++	struct list_head list;
++	cmdqu_t cmdq;
++	wait_queue_head_t wq;
++	int condition;
++};
++
++struct rtos_irqaction {
++	void *handler;
++	void *dev_id;
++	unsigned char ip_id;
++	const char *name;
++};
++
++static struct rtos_irqaction rtos_irqaction[NR_RTOS_IP];
++static struct rtos_cmdqu_wait_list_t rtos_cmdqu_wait_head;
++
++int request_rtos_irq(unsigned char ip_id, void (*handler), const char *devname, void *dev_id)
++{
++	pr_debug("ip_id =%d handler=%p devname=%s\n", ip_id, handler, devname);
++
++	if (ip_id < NR_RTOS_IP && handler && devname) {
++		rtos_irqaction[ip_id].handler = handler;
++		rtos_irqaction[ip_id].name = devname;
++		rtos_irqaction[ip_id].dev_id = dev_id;
++		rtos_irqaction[ip_id].ip_id = ip_id;
++		return 0;
++	} else {
++		pr_err("%s fail ip_id =%d handler=%p devname=%s\n", __func__, ip_id, handler, devname);
++		return -EINVAL;
++	}
++}
++EXPORT_SYMBOL(request_rtos_irq);
++
++void init_sqirq(void)
++{
++	int ip_id;
++
++	for (ip_id = 0; ip_id < NR_RTOS_IP; ip_id++) {
++		rtos_irqaction[ip_id].handler = NULL;
++		rtos_irqaction[ip_id].name = NULL;
++		rtos_irqaction[ip_id].dev_id = NULL;
++		rtos_irqaction[ip_id].ip_id = 0xFF;
++	}
++}
++
++int free_rtos_irq(unsigned char ip_id)
++{
++	if (ip_id < NR_RTOS_IP) {
++		rtos_irqaction[ip_id].handler = NULL;
++		rtos_irqaction[ip_id].name = NULL;
++		rtos_irqaction[ip_id].dev_id = NULL;
++		rtos_irqaction[ip_id].ip_id = 0xFF;
++		return 0;
++	}
++	return -EINVAL;
++}
++EXPORT_SYMBOL(free_rtos_irq);
++
++typedef void (*irq_request_func) (unsigned int, unsigned int, void *);
++
++/* used for callback test*/
++static void callback_rtos_irq_handler(int cmd_id, unsigned int ptr, void *dev_id)
++{
++	pr_info("callback_rtos_hander cmd_id = %x ptr=%x dev_id=%p\n", cmd_id, ptr, dev_id);
++}
++
++DEFINE_CVI_SPINLOCK(mailbox_lock, SPIN_MBOX);
++
++irqreturn_t rtos_irq_handler(int irq, void *dev_id)
++{
++	char set_val, done_val;
++	int i;
++	int flags;
++	cmdqu_t *cmdq;
++
++	struct rtos_cmdqu_wait_list_t *wait_list;
++	struct list_head *pos;
++
++	drv_spin_lock_irqsave(&mailbox_lock, flags);
++	if (flags == MAILBOX_LOCK_FAILED) {
++		pr_err("drv_spin_lock_irqsave failed!\n");
++		//must clear irq?
++		return IRQ_HANDLED;
++	}
++	pr_debug("rtos_irq_handler irq=%d\n", irq);
++	set_val = mbox_reg->cpu_mbox_set[RECEIVE_CPU].cpu_mbox_int_int.mbox_int;
++	done_val = mbox_done_reg->cpu_mbox_done[RECEIVE_CPU].cpu_mbox_int_int.mbox_int;
++	pr_debug("set_val=%x\n", set_val);
++	pr_debug("done_val=%x\n", done_val);
++
++	for (i = 0; i < MAILBOX_MAX_NUM && set_val > 0; i++) {
++		/* valid_val uses unsigned char because of mailbox register table
++		 * ~valid_val will be 0xFF
++		 */
++		unsigned char valid_val = set_val & (1 << i);
++
++		pr_debug("MAILBOX_MAX_NUM = %d\n", MAILBOX_MAX_NUM);
++		pr_debug("valid_val = %d set_val=%d i = %d\n", valid_val, set_val, i);
++		if (valid_val) {
++			cmdqu_t linux_cmdq;
++
++			cmdq = (cmdqu_t *)(mailbox_context) + i;
++			/* mailbox buffer context is send from rtos, clear mailbox interrupt */
++			mbox_reg->cpu_mbox_set[RECEIVE_CPU].cpu_mbox_int_clr.mbox_int_clr = valid_val;
++			// need to disable enable bit
++			mbox_reg->cpu_mbox_en[RECEIVE_CPU].mbox_info &= ~valid_val;
++			// copy cmdq context (8 bytes) to buffer ASAP ??
++			*((unsigned long long *) &linux_cmdq) = *((unsigned long long *)cmdq);
++			/* need to clear mailbox interrupt before clear mailbox buffer ??*/
++			*((unsigned long long *) cmdq) = 0;
++
++			/* mailbox buffer context is send from rtos */
++			pr_debug("cmdq=%p\n", cmdq);
++			pr_debug("cmdq->ip_id =%d\n", linux_cmdq.ip_id);
++			pr_debug("cmdq->cmd_id =%d\n", linux_cmdq.cmd_id);
++			pr_debug("cmdq->param_ptr =%x\n", linux_cmdq.param_ptr);
++			pr_debug("cmdq->block =%d\n", linux_cmdq.block);
++			pr_debug("cmdq->linux_valid =%d\n", linux_cmdq.resv.valid.linux_valid);
++			pr_debug("cmdq->rtos_valid =%x", linux_cmdq.resv.valid.rtos_valid);
++			if (linux_cmdq.resv.valid.rtos_valid == 1 &&
++				linux_cmdq.cmd_id <= NR_RTOS_CMD &&
++				linux_cmdq.ip_id <= NR_RTOS_IP &&
++				linux_cmdq.block == 1) {
++				// dewait
++				list_for_each(pos, &rtos_cmdqu_wait_head.list) {
++					wait_list = list_entry(pos, struct rtos_cmdqu_wait_list_t, list);
++					pr_debug("s wait_list->cmdq.ip_id=%d\n", wait_list->cmdq.ip_id);
++					pr_debug("s wait_list->cmdq.cmd_id=%d\n", wait_list->cmdq.cmd_id);
++					if (wait_list->cmdq.ip_id == linux_cmdq.ip_id &&
++						wait_list->cmdq.cmd_id == linux_cmdq.cmd_id) {
++						/* copy data to wait_list and return to user space */
++						*((unsigned long long *) &wait_list->cmdq) =
++							*((unsigned long long *) &linux_cmdq);
++						pr_debug("wait_list->cmdq.ip_id=%d\n",
++							wait_list->cmdq.ip_id);
++						pr_debug("wait_list->cmdq.cmd_id=%d\n",
++							wait_list->cmdq.cmd_id);
++						pr_debug("wait_list->cmdq.param_ptr=%x\n",
++							wait_list->cmdq.param_ptr);
++
++						wait_list->condition = 1;
++						wake_up_interruptible(&wait_list->wq);
++						break;
++					}
++				}
++			} else if (linux_cmdq.resv.valid.rtos_valid == 1 &&
++				rtos_irqaction[linux_cmdq.ip_id].handler &&
++				rtos_irqaction[linux_cmdq.ip_id].ip_id <= NR_RTOS_IP) {
++				irq_request_func rtos_irq_func;
++
++				pr_debug("handler =%p\n",
++					rtos_irqaction[linux_cmdq.ip_id].handler);
++				pr_debug("name =%s\n",
++					rtos_irqaction[linux_cmdq.ip_id].name);
++				rtos_irq_func = rtos_irqaction[linux_cmdq.ip_id].handler;
++				rtos_irq_func(linux_cmdq.cmd_id, linux_cmdq.param_ptr,
++					rtos_irqaction[linux_cmdq.ip_id].dev_id);
++			} else
++				pr_err("error ip=%d , cmd=%d\n", linux_cmdq.ip_id, linux_cmdq.cmd_id);
++		}
++	}
++	drv_spin_unlock_irqrestore(&mailbox_lock, flags);
++	return IRQ_HANDLED;
++}
++
++long rtos_cmdqu_init(void)
++{
++	long ret = 0;
++	int i;
++
++	pr_debug("RTOS_CMDQU_INIT\n");
++	spin_lock_init(&mailbox_queue_lock);
++	spin_lock_init(&send_queue_lock);
++	mbox_reg = (struct mailbox_set_register *) reg_base;
++	mbox_done_reg = (struct mailbox_done_register *) (reg_base + MAILBOX_DONE_OFFSET);
++	mailbox_context = (unsigned long *) (reg_base + MAILBOX_CONTEXT_OFFSET);//MAILBOX_CONTEXT;
++
++	pr_debug("mbox_reg=%p\n", mbox_reg);
++	pr_debug("mbox_done_reg=%p\n", mbox_done_reg);
++	pr_debug("mailbox_context=%p\n", mailbox_context);
++
++	// init mailbox_context
++	for ( i=0;i < MAILBOX_MAX_NUM;i++)
++		mailbox_context[i] = 0;
++	/* init sqirq parameters*/
++	init_sqirq();
++	return ret;
++}
++
++long rtos_cmdqu_deinit(void)
++{
++	long ret = 0;
++	pr_debug("RTOS_CMDQU_DEINIT\n");
++	//mailbox deinit
++	return ret;
++}
++
++int rtos_cmdqu_send(cmdqu_t *cmdq)
++{
++	int ret = 0;
++	int valid;
++	unsigned long flags;
++	int mb_flags;
++	cmdqu_t *linux_cmdqu_t;
++
++	pr_debug("RTOS_CMDQU_SEND\n");
++	pr_debug("ip_id=%d cmd_id=%d param_ptr=%x\n", cmdq->ip_id, cmdq->cmd_id, (unsigned int)cmdq->param_ptr);
++
++	spin_lock_irqsave(&mailbox_queue_lock, flags);
++	// when linux and rtos send command at the same time, it might cause a problem.
++	// might need to spinlock with rtos, do it later
++	drv_spin_lock_irqsave(&mailbox_lock, mb_flags);
++	if (mb_flags == MAILBOX_LOCK_FAILED) {
++		pr_err("ip_id=%d cmd_id=%d param_ptr=%x\n", cmdq->ip_id, cmdq->cmd_id, (unsigned int)cmdq->param_ptr);
++		spin_unlock_irqrestore(&mailbox_queue_lock, flags);
++		return -ENOBUFS;
++	}
++	linux_cmdqu_t = (cmdqu_t *) mailbox_context;
++	pr_debug("mailbox_context = %p\n", mailbox_context);
++	pr_debug("linux_cmdqu_t = %p\n", linux_cmdqu_t);
++	pr_debug("cmdq->ip_id = %d\n", cmdq->ip_id);
++	pr_debug("cmdq->cmd_id = %d\n", cmdq->cmd_id);
++	pr_debug("cmdq->block = %d\n", cmdq->block);
++	pr_debug("cmdq->para_ptr = %d\n", cmdq->param_ptr);
++	if (cmdq->ip_id >= IP_LIMIT || cmdq->cmd_id >= SYS_CMD_INFO_LIMIT) {
++		pr_err("invalid-id : ip_id = %d cmd_id = %d\n", cmdq->ip_id, cmdq->cmd_id);
++		drv_spin_unlock_irqrestore(&mailbox_lock, mb_flags);
++		spin_unlock_irqrestore(&mailbox_queue_lock, flags);
++		return -ENOBUFS;
++	}
++
++	for (valid = 0; valid < MAILBOX_MAX_NUM; valid++) {
++		if (linux_cmdqu_t->resv.valid.linux_valid == 0 && linux_cmdqu_t->resv.valid.rtos_valid == 0) {
++			// mailbox buffer context is int (4 bytes) access
++			int *ptr = (int *)linux_cmdqu_t;
++
++			linux_cmdqu_t->resv.valid.linux_valid = 1;
++			*ptr = ((cmdq->ip_id << 0) | (cmdq->cmd_id << 8) | (cmdq->block << 15) |
++					(linux_cmdqu_t->resv.valid.linux_valid << 16) |
++					(linux_cmdqu_t->resv.valid.rtos_valid << 24));
++			linux_cmdqu_t->param_ptr = cmdq->param_ptr;
++			pr_debug("linux_valid = %d\n", linux_cmdqu_t->resv.valid.linux_valid);
++			pr_debug("rtos_valid = %d\n", linux_cmdqu_t->resv.valid.rtos_valid);
++			pr_debug("ip_id = %d\n", linux_cmdqu_t->ip_id);
++			pr_debug("cmd_id = %d\n", linux_cmdqu_t->cmd_id);
++			pr_debug("block = %d\n", linux_cmdqu_t->block);
++			pr_debug("param_ptr = %x\n", linux_cmdqu_t->param_ptr);
++			pr_debug("*ptr = %x\n", *ptr);
++			// clear mailbox
++			mbox_reg->cpu_mbox_set[SEND_TO_CPU].cpu_mbox_int_clr.mbox_int_clr = (1 << valid);
++			// trigger mailbox valid to rtos
++			mbox_reg->cpu_mbox_en[SEND_TO_CPU].mbox_info |= (1 << valid);
++			mbox_reg->mbox_set.mbox_set = (1 << valid);
++
++			break;
++		}
++		linux_cmdqu_t++;
++	}
++
++	if (valid >= MAILBOX_MAX_NUM) {
++		pr_err("No valid mailbox is available\n");
++		drv_spin_unlock_irqrestore(&mailbox_lock, mb_flags);
++		spin_unlock_irqrestore(&mailbox_queue_lock, flags);
++		return -ENOBUFS;
++	}
++	drv_spin_unlock_irqrestore(&mailbox_lock, mb_flags);
++	spin_unlock_irqrestore(&mailbox_queue_lock, flags);
++    return ret;
++}
++EXPORT_SYMBOL(rtos_cmdqu_send);
++
++int rtos_cmdqu_send_wait(cmdqu_t *cmdq, int wait_cmd_id)
++{
++	unsigned long flags;
++	struct rtos_cmdqu_wait_list_t *wait_list;
++	struct list_head *pos;
++	int delaytime;
++	int ret = 0;
++
++	pr_debug("%s %d\n", __func__, __LINE__);
++
++	spin_lock_irqsave(&send_queue_lock, flags);
++	/* check list with same commands? if yes, ignore it */
++	list_for_each(pos, &rtos_cmdqu_wait_head.list) {
++		wait_list = list_entry(pos, struct rtos_cmdqu_wait_list_t, list);
++		pr_debug("list->cmdq.ip_id=%d\n", wait_list->cmdq.ip_id);
++		pr_debug("list->cmdq.cmd_id=%d\n", wait_list->cmdq.cmd_id);
++		if (cmdq->ip_id == wait_list->cmdq.ip_id &&
++			wait_cmd_id == wait_list->cmdq.cmd_id &&
++			cmdq->param_ptr == wait_list->cmdq.param_ptr) {
++
++			pr_debug("exist : wait_list->cmdq.ip_id=%d\n", wait_list->cmdq.ip_id);
++			pr_debug("exist : wait_list->cmdq.cmd_id=%d\n", wait_list->cmdq.cmd_id);
++			pr_debug("exist : wait_list->cmdq.param_ptr=%d\n", wait_list->cmdq.param_ptr);
++			spin_unlock_irqrestore(&send_queue_lock, flags);
++			return -EEXIST;
++
++		}
++	}
++	cmdq->block = 1;
++
++	wait_list = kzalloc(sizeof(struct rtos_cmdqu_wait_list_t), GFP_KERNEL);
++
++	if (!wait_list) {
++		spin_unlock_irqrestore(&send_queue_lock, flags);
++		return -ENOMEM;
++	}
++
++	*((unsigned long long *) &wait_list->cmdq) = *((unsigned long long *) cmdq);
++	wait_list->cmdq.cmd_id = wait_cmd_id;
++
++	init_waitqueue_head(&wait_list->wq);
++	list_add_tail(&wait_list->list, &rtos_cmdqu_wait_head.list);
++
++	spin_unlock_irqrestore(&send_queue_lock, flags);
++	/* check the delay ms
++	 * if mstime is 65535 (-1), it will be blocked infinite (MAX_JIFFY_OFFSET)
++	 */
++
++	delaytime = wait_list->cmdq.resv.mstime;
++	if (delaytime == 0xFFFF)
++		delaytime = -1;
++
++	ret = rtos_cmdqu_send(cmdq);
++
++	ret = wait_event_interruptible_timeout(wait_list->wq,
++		wait_list->condition != 0, msecs_to_jiffies(delaytime));
++	spin_lock_irqsave(&send_queue_lock, flags);
++	list_del_init(&wait_list->list);
++	spin_unlock_irqrestore(&send_queue_lock, flags);
++	if (!ret) {
++		ret = -ETIME;
++		kfree(wait_list);
++		pr_err("RTOS_CMDQU_SEND_WAIT timeout\n");
++		return ret;
++	}
++	pr_debug("RTOS_CMDQU_SEND_WAIT done\n");
++	pr_debug("list wait_list->cmdq.ip_id=%d wait_list->cmdq.cmd_id=%d wait_list->cmdq.param_ptr=%x\n",
++		wait_list->cmdq.ip_id, wait_list->cmdq.cmd_id, wait_list->cmdq.param_ptr);
++
++	/* get context from interrupt and return to userspace */
++	*((unsigned long long *) cmdq) = *((unsigned long long *) &wait_list->cmdq);
++	kfree(wait_list);
++	return 0;
++}
++EXPORT_SYMBOL(rtos_cmdqu_send_wait);
++
++static long cvi_rtos_cmdqu_ioctl(struct file *filp, unsigned int cmd, unsigned long  arg)
++{
++	struct cvi_rtos_cmdqu_device *dev = filp->private_data;
++	struct rtos_cmdqu_wait_list_t *wait_list;
++	struct list_head *pos;
++	long ret = 0;
++	unsigned long flags;
++	cmdqu_t cmdq;
++
++	pr_debug("%s dev=%p\n", __func__, dev);
++	switch (cmd) {
++		case RTOS_CMDQU_SEND:
++			pr_debug("RTOS_CMDQU_SEND\n");
++			copy_from_user(&cmdq,
++				(struct cmdqu_t __user *)arg,
++				sizeof(struct cmdqu_t));
++			ret = rtos_cmdqu_send(&cmdq);
++			break;
++		case RTOS_CMDQU_SEND_WAKEUP:
++			pr_debug("RTOS_CMDQU_SEND_WAKEUP\n");
++			copy_from_user(&cmdq,
++				(struct cmdqu_t __user *)arg,
++				sizeof(struct cmdqu_t));
++			pr_debug("cmdq.ip_id=%d cmdq.cmd_id=%d\n", cmdq.ip_id, cmdq.cmd_id);
++
++			spin_lock_irqsave(&send_queue_lock, flags);
++			list_for_each(pos, &rtos_cmdqu_wait_head.list) {
++				wait_list = list_entry(pos, struct rtos_cmdqu_wait_list_t, list);
++				pr_debug("list->cmdq.ip_id=%d\n", wait_list->cmdq.ip_id);
++				pr_debug("list->cmdq.cmd_id=%d\n", wait_list->cmdq.cmd_id);
++				if (cmdq.ip_id == wait_list->cmdq.ip_id &&
++					cmdq.cmd_id == wait_list->cmdq.cmd_id &&
++					wait_list->cmdq.block == 1) {
++					/* copy data to wait_list and return to user space */
++					*((unsigned long long *) &wait_list->cmdq) = *((unsigned long long *) &cmdq);
++					pr_debug("wait_list->cmdq.ip_id=%d\n", wait_list->cmdq.ip_id);
++					pr_debug("wait_list->cmdq.cmd_id=%d\n", wait_list->cmdq.cmd_id);
++					pr_debug("wait_list->cmdq.param_ptr=%d\n", wait_list->cmdq.param_ptr);
++
++					wait_list->condition = 1;
++					wake_up_interruptible(&wait_list->wq);
++					break;
++				}
++			}
++			spin_unlock_irqrestore(&send_queue_lock, flags);
++			pr_debug("RTOS_CMDQU_SEND_WAKEUP done\n");
++			break;
++
++		case RTOS_CMDQU_SEND_WAIT:
++			pr_debug("RTOS_CMDQU_SEND_WAIT\n");
++			ret = copy_from_user(&cmdq,
++				(struct cmdqu_t __user *)arg,
++				sizeof(struct cmdqu_t));
++			if (ret) {
++				kfree(wait_list);
++				return -EFAULT;
++			}
++			rtos_cmdqu_send_wait(&cmdq, cmdq.cmd_id);
++			ret = copy_to_user((struct cmdqu_t __user *)arg,
++					&cmdq,
++					sizeof(struct cmdqu_t));
++			kfree(wait_list);
++			break;
++		case RTOS_CMDQU_REQUEST:
++			copy_from_user(&cmdq,
++				(struct cmdqu_t __user *)arg,
++				sizeof(struct cmdqu_t));
++
++			ret = request_rtos_irq(cmdq.ip_id, callback_rtos_irq_handler,
++				"RTOS_CMDQU_REQUEST", (void *)((unsigned long)cmdq.param_ptr));
++			break;
++		case RTOS_CMDQU_REQUEST_FREE:
++			copy_from_user(&cmdq,
++				(struct cmdqu_t __user *)arg,
++				sizeof(struct cmdqu_t));
++			free_rtos_irq(cmdq.ip_id);
++			break;
++		default:
++			ret = -EFAULT;
++			break;
++	}
++	return ret;
++}
++
++static const struct file_operations rtos_cmdqu_fops = {
++	.owner = THIS_MODULE,
++	.open = cvi_rtos_cmdqu_open,
++	.release = cvi_rtos_cmdqu_release,
++	.unlocked_ioctl = cvi_rtos_cmdqu_ioctl,
++};
++
++static int _register_dev(struct cvi_rtos_cmdqu_device *ndev)
++{
++	int rc;
++
++	ndev->miscdev.minor = MISC_DYNAMIC_MINOR;
++	ndev->miscdev.name = RTOS_CMDQU_DEV_NAME;
++	ndev->miscdev.fops = &rtos_cmdqu_fops;
++
++	rc = misc_register(&ndev->miscdev);
++	if (rc) {
++		dev_err(ndev->dev, "cvi_rtos_cmdqu: failed to register misc device.\n");
++		return rc;
++	}
++
++	return 0;
++}
++
++static int cvi_rtos_cmdqu_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct cvi_rtos_cmdqu_device *ndev;
++	struct resource *res;
++	int ret = 0;
++	int err = -1;
++
++	pr_info("%s start ---\n", __func__);
++	pr_info("name=%s\n", pdev->name);
++	ndev = devm_kzalloc(&pdev->dev, sizeof(*ndev), GFP_KERNEL);
++	if (!ndev)
++		return -ENOMEM;
++
++	ndev->dev = dev;
++
++	ret = _register_dev(ndev);
++	if (ret < 0) {
++		pr_err("regsiter cvi_rtos_cmdqu chrdev error\n");
++		return ret;
++	}
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++
++//	void __iomem *regs;
++//	regs = devm_ioremap_resource(dev, res);
++//	if (IS_ERR(regs)) {
++//		ret = PTR_ERR(regs);
++//		goto ERROR_PROVE_DEVICE;
++//	}
++//	printk("regs=%x\n", regs);
++
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0))
++#ifdef _LP64
++	reg_base = (__u64)devm_ioremap(&pdev->dev, res->start,
++		res->end - res->start);
++#else
++	reg_base = (__u32)devm_ioremap(&pdev->dev, res->start,
++		res->end - res->start);
++#endif
++#else
++#ifdef _LP64
++	reg_base = (__u64)ioremap_nocache((unsigned long)res->start,
++		(unsigned long)(res->end - res->start + 1));
++#else
++	reg_base = (__u32)ioremap_nocache((unsigned long)res->start,
++		(unsigned long)(res->end - res->start + 1));
++#endif
++#endif
++
++	pr_info("res-reg: start: 0x%llx, end: 0x%llx, virt-addr(%llx).\n",
++		res->start, res->end, le64_to_cpu(reg_base));
++	// spinlock ip offset address (0xc0)
++	spinlock_base(reg_base + 0xc0);
++	mailbox_irq = platform_get_irq_byname(pdev, "mailbox");
++
++	INIT_LIST_HEAD(&rtos_cmdqu_wait_head.list);
++	/* init cmdqu*/
++	rtos_cmdqu_init();
++	platform_set_drvdata(pdev, ndev);
++
++	err = request_irq(mailbox_irq, rtos_irq_handler, 0, "mailbox",
++		(void *)ndev);
++
++	if (err) {
++		pr_err("fail to register interrupt handler\n");
++		return -1;
++	}
++
++	pr_info("%s DONE\n", __func__);
++	return 0;
++
++//ERROR_PROVE_DEVICE:
++//	return err;
++}
++
++static void cvi_rtos_cmdqu_remove(struct platform_device *pdev)
++{
++	struct cvi_rtos_cmdqu_device *ndev = platform_get_drvdata(pdev);
++
++	misc_deregister(&ndev->miscdev);
++	platform_set_drvdata(pdev, NULL);
++	/* remove irq handler*/
++	free_irq(mailbox_irq, ndev);
++	rtos_cmdqu_deinit();
++	pr_debug("%s DONE\n", __func__);
++
++}
++
++static const struct of_device_id cvi_rtos_cmdqu_match[] = {
++	{ .compatible = "cvitek,rtos_cmdqu" },
++	{},
++};
++
++static struct platform_driver cvi_rtos_cmdqu_driver = {
++	.probe = cvi_rtos_cmdqu_probe,
++	.remove = cvi_rtos_cmdqu_remove,
++	.driver = {
++		.name = RTOS_CMDQU_DEV_NAME,
++		.of_match_table = cvi_rtos_cmdqu_match,
++	},
++};
++
++struct class *pbase_class;
++static void cvi_rtos_cmdqu_exit(void)
++{
++	platform_driver_unregister(&cvi_rtos_cmdqu_driver);
++	class_destroy(pbase_class);
++	cvi_spinlock_uninit();
++	pr_debug("%s DONE\n", __func__);
++}
++
++static int cvi_rtos_cmdqu_init(void)
++{
++	int rc;
++	pr_debug("cvi_rtos_cmdqu_init");
++	pbase_class = class_create(RTOS_CMDQU_DEV_NAME);
++	if (IS_ERR(pbase_class)) {
++		pr_err("create class failed\n");
++		rc = PTR_ERR(pbase_class);
++		goto cleanup;
++	}
++
++	platform_driver_register(&cvi_rtos_cmdqu_driver);
++	pr_debug("%s done\n", __func__);
++	cvi_spinlock_init();
++	return 0;
++cleanup:
++	cvi_rtos_cmdqu_exit();
++	return rc;
++}
++
++MODULE_DESCRIPTION("RTOS_CMD_QUEUE");
++MODULE_LICENSE("GPL");
++module_init(cvi_rtos_cmdqu_init);
++module_exit(cvi_rtos_cmdqu_exit);
+diff --git a/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.h b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.h
+new file mode 100644
+index 000000000000..59369683b4e8
+--- /dev/null
++++ b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.h
+@@ -0,0 +1,90 @@
++#ifndef __RTOS_COMMAND_QUEUE__
++#define __RTOS_COMMAND_QUEUE__
++
++#ifdef __linux__
++#include <linux/kernel.h>
++#endif
++
++#define NR_SYSTEM_CMD           20
++#define NR_RTOS_CMD            127
++#define NR_RTOS_IP        IP_LIMIT
++
++enum IP_TYPE {
++	IP_ISP = 0,
++	IP_VCODEC,
++	IP_VIP,
++	IP_VI,
++	IP_RGN,
++	IP_AUDIO,
++	IP_SYSTEM,
++	IP_CAMERA,
++	IP_LIMIT,
++};
++
++enum SYS_CMD_ID {
++	SYS_CMD_INFO_TRANS = 0x50,
++	SYS_CMD_INFO_LINUX_INIT_DONE,
++	SYS_CMD_INFO_RTOS_INIT_DONE,
++	SYS_CMD_INFO_STOP_ISR,
++	SYS_CMD_INFO_STOP_ISR_DONE,
++	SYS_CMD_INFO_LINUX,
++	SYS_CMD_INFO_RTOS,
++	SYS_CMD_SYNC_TIME,
++	SYS_CMD_INFO_DUMP_MSG,
++	SYS_CMD_INFO_DUMP_EN,
++	SYS_CMD_INFO_DUMP_DIS,
++	SYS_CMD_INFO_DUMP_JPG,
++	SYS_CMD_INFO_TRACE_SNAPSHOT_START,
++	SYS_CMD_INFO_TRACE_SNAPSHOT_STOP,
++	SYS_CMD_INFO_TRACE_STREAM_START,
++	SYS_CMD_INFO_TRACE_STREAM_STOP,
++	SYS_CMD_INFO_LIMIT,
++};
++
++struct valid_t {
++	unsigned char linux_valid;
++	unsigned char rtos_valid;
++} __attribute__((packed));
++
++typedef union resv_t {
++	struct valid_t valid;
++	unsigned short mstime; // 0 : noblock, -1 : block infinite
++} resv_t;
++
++typedef struct cmdqu_t cmdqu_t;
++/* cmdqu size should be 8 bytes because of mailbox buffer size */
++struct cmdqu_t {
++	unsigned char ip_id;
++	unsigned char cmd_id : 7;
++	unsigned char block : 1;
++	union resv_t resv;
++	unsigned int  param_ptr;
++} __attribute__((packed)) __attribute__((aligned(0x8)));
++
++#ifdef __linux__
++/* keep those commands for ioctl system used */
++enum SYSTEM_CMD_TYPE {
++	CMDQU_SEND = 1,
++	CMDQU_REQUEST,
++	CMDQU_REQUEST_FREE,
++	CMDQU_SEND_WAIT,
++	CMDQU_SEND_WAKEUP,
++	CMDQU_SYSTEM_LIMIT = NR_SYSTEM_CMD,
++};
++
++#define RTOS_CMDQU_DEV_NAME "cvi-rtos-cmdqu"
++#define RTOS_CMDQU_SEND                         _IOW('r', CMDQU_SEND, unsigned long)
++#define RTOS_CMDQU_REQUEST                      _IOW('r', CMDQU_REQUEST, unsigned long)
++#define RTOS_CMDQU_REQUEST_FREE                 _IOW('r', CMDQU_REQUEST_FREE, unsigned long)
++#define RTOS_CMDQU_SEND_WAIT                    _IOW('r', CMDQU_SEND_WAIT, unsigned long)
++#define RTOS_CMDQU_SEND_WAKEUP                  _IOW('r', CMDQU_SEND_WAKEUP, unsigned long)
++
++int rtos_cmdqu_send(cmdqu_t *cmdq);
++int rtos_cmdqu_send_wait(cmdqu_t *cmdq, int wait_cmd_id);
++int request_rtos_irq(unsigned char ip_id, void *handler, const char *devname, void *dev_id);
++int free_rtos_irq(unsigned char ip_id);
++
++#endif // end of __linux__
++
++#endif  // end of __RTOS_COMMAND_QUEUE__
++
+diff --git a/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.c b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.c
+new file mode 100644
+index 000000000000..598e3373af89
+--- /dev/null
++++ b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.c
+@@ -0,0 +1,39 @@
++#include "rtos_cmdqu.h"
++#include "base_cb.h"
++#include "cmdqu_cb.h"
++
++int rtos_cmdqu_cb(void *dev, enum ENUM_MODULES_ID caller, u32 cmd, void *arg)
++{
++	struct cvi_rtos_cmdqu_device *ndev = (struct cvi_rtos_cmdqu_device *)dev;
++	int rc = -1;
++
++	(void)ndev;
++	(void)arg;
++
++	if (caller == E_MODULE_RGN) {
++		switch (cmd) {
++		case CMDQU_CB_RGN_COMPRESS:
++		case CMDQU_CB_RGN_GET_COMPRESS_SIZE:
++		{
++			cmdqu_t stRtosCmdqu;
++			struct cmdqu_rgn_cb_param *rgn_cb_param;
++
++			rgn_cb_param = (struct cmdqu_rgn_cb_param *)arg;
++			stRtosCmdqu.ip_id = IP_RGN;
++			stRtosCmdqu.cmd_id = rgn_cb_param->u8CmdId;
++			stRtosCmdqu.block = 1;
++			stRtosCmdqu.param_ptr = rgn_cb_param->u32RgnCmprParamPAddr;
++			stRtosCmdqu.resv.mstime = 1000;
++			rc = rtos_cmdqu_send_wait(&stRtosCmdqu, stRtosCmdqu.cmd_id);
++
++			break;
++		}
++
++		default:
++			break;
++		}
++	}
++
++	return rc;
++}
++
+diff --git a/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.h b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.h
+new file mode 100644
+index 000000000000..1fe34b3182f6
+--- /dev/null
++++ b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu_cb.h
+@@ -0,0 +1,7 @@
++#ifndef __RTOS_COMMAND_QUEUE_CB__
++#define __RTOS_COMMAND_QUEUE_CB__
++
++int rtos_cmdqu_cb(void *dev, enum ENUM_MODULES_ID caller, u32 cmd, void *arg);
++
++#endif  // end of __RTOS_COMMAND_QUEUE_CB__
++
+-- 
+2.34.1
+

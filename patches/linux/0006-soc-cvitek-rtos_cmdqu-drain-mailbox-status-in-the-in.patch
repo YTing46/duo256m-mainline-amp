@@ -1,0 +1,51 @@
+From 8f9b9fe9a8c606714eed5f91379f5b2813686d06 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 7 Jul 2026 06:41:57 +0800
+Subject: [PATCH 06/13] soc: cvitek: rtos_cmdqu: drain mailbox status in the
+ interrupt handler
+
+The ISR sampled the mailbox interrupt status once and then walked that
+snapshot. A message arriving while the loop was still running was not
+in the snapshot and relied on a fresh edge to re-trigger the handler,
+which is not guaranteed -- the notification could be lost with no
+recovery path. Re-read the status register after the loop and keep
+draining until it reads zero.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c
+index 1af15010df74..e9ba20ca2835 100644
+--- a/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c
++++ b/drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c
+@@ -140,7 +140,8 @@ static irqreturn_t rtos_irq_handler(int irq, void *dev_id)
+ 	pr_debug("set_val=%x\n", set_val);
+ 	pr_debug("done_val=%x\n", done_val);
+ 
+-	for (i = 0; i < MAILBOX_MAX_NUM && set_val > 0; i++) {
++   do {
++	for (i = 0; i < MAILBOX_MAX_NUM; i++) {
+ 		/* valid_val uses unsigned char because of mailbox register table
+ 		 * ~valid_val will be 0xFF
+ 		 */
+@@ -211,6 +212,15 @@ static irqreturn_t rtos_irq_handler(int irq, void *dev_id)
+ 				pr_err("error ip=%d , cmd=%d\n", linux_cmdq.ip_id, linux_cmdq.cmd_id);
+ 		}
+ 	}
++	/*
++	 * Re-read the interrupt status: a mailbox message that arrived AFTER the
++	 * initial set_val snapshot (while we were in the loop above) would other-
++	 * wise be dropped, relying on a fresh PLIC re-trigger that does not always
++	 * happen -> the C906L->host echo notification is lost and rpmsg pingpong
++	 * stalls. Loop until the mailbox is fully drained. (Bug #2)
++	 */
++	set_val = mbox_reg->cpu_mbox_set[RECEIVE_CPU].cpu_mbox_int_int.mbox_int;
++	} while (set_val > 0);
+ 	drv_spin_unlock_irqrestore(&mailbox_lock, flags);
+ 	return IRQ_HANDLED;
+ }
+-- 
+2.34.1
+

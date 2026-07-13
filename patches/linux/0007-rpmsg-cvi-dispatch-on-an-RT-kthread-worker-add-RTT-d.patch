@@ -1,0 +1,163 @@
+From 08b4d72a0109b816fc24ae896d2c8d0fcd692fd0 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 7 Jul 2026 21:29:18 +0800
+Subject: [PATCH 07/13] rpmsg: cvi: dispatch on an RT kthread worker; add RTT
+ decomposition probes
+
+Replace the schedule_delayed_work() notification hop with a dedicated
+SCHED_FIFO kthread_worker. The vq callbacks cannot run in the mailbox
+ISR (recv_done re-kicks the rvq and would re-take the cross-core HW
+spinlock the ISR holds) nor in BH context (cvi_rpmsg_notify sleeps on a
+mutex, the NS callback's device_register sleeps -- measured 'scheduling
+while atomic' BUG). Regular and high-priority workqueues both cost
+~39us p50 of scheduling latency per round-trip; the RT kthread cuts
+that to ~28us and tightens p90 RTT from 180us to 157us (10k-sample
+decomposition, 4B payload).
+
+Also add ktime/rdtime probes (b1/b1_done/b2/b2b) exported via
+/proc/rpmsg_rtt for the decomp4-style RTT breakdown used to measure
+this (Henry's methodology).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ drivers/rpmsg/cvi_rpmsg_shmem.c | 66 +++++++++++++++++++++++++++++++--
+ 1 file changed, 62 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/rpmsg/cvi_rpmsg_shmem.c b/drivers/rpmsg/cvi_rpmsg_shmem.c
+index 938f4f14e91b..18a345d05011 100644
+--- a/drivers/rpmsg/cvi_rpmsg_shmem.c
++++ b/drivers/rpmsg/cvi_rpmsg_shmem.c
+@@ -20,8 +20,13 @@
+ #include <linux/clk.h>
+ #include <linux/dma-map-ops.h>
+ #include <linux/err.h>
++#include <linux/proc_fs.h>
++#include <linux/seq_file.h>
++#include <linux/timex.h>
+ #include <linux/init.h>
+ #include <linux/interrupt.h>
++#include <linux/kthread.h>
++#include <linux/sched.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/of_address.h>
+@@ -55,9 +60,36 @@ struct cvi_rpmsg_vproc {
+ 	struct cvi_virdev ivdev[MAX_VDEV_NUMS];
+ };
+ 
+-static struct delayed_work rpmsg_work;
++/*
++ * Dispatched on a dedicated SCHED_FIFO kthread_worker: the vq callbacks
++ * cannot run in the mailbox ISR (recv_done re-kicks the rvq ->
++ * rtos_cmdqu_send -> would re-take the cross-core HW spinlock the ISR
++ * holds = deadlock) and cannot run in BH/softirq context either
++ * (cvi_rpmsg_notify sleeps on a mutex and the NS callback's
++ * device_register sleeps -- BH dispatch BUGs with "scheduling while
++ * atomic", measured). Regular and even high-priority workqueues cost
++ * ~39us p50 of scheduling latency per round-trip (decomp-measured, both
++ * identical); an RT kthread preempts immediately while keeping process
++ * context so the NS path may still sleep.
++ */
++static struct kthread_worker *rpmsg_kworker;
++static struct kthread_work rpmsg_work;
+ struct virtio_device *vdev_isr = NULL;
+ 
++/*
++ * RTT decomposition probes (Henry's decomp4 method). One writer per probe
++ * point, read via /proc/rpmsg_rtt by the benchmark after each round-trip
++ * (single-threaded bench => per-iteration mapping is stable).
++ *   b1/b1_tick: before the TX-vq mailbox notify (ktime + rdtime tick)
++ *   b1d:        after the notify returned
++ *   b2/b2_tick: mailbox notification handler entry (echo arrival)
++ *   b2b:        workqueue handler start
++ * Ticks are the 25 MHz time CSR shared timebase with the C906L; the
++ * benchmark sums forward+reverse transport so any inter-CLINT offset
++ * cancels.
++ */
++static u64 rtt_b1_ns, rtt_b1_tick, rtt_b1d_ns, rtt_b2_ns, rtt_b2_tick, rtt_b2b_ns;
++
+ static void __iomem *reg_base;
+ volatile struct mailbox_set_register __iomem *mbox_reg_rpmsg;
+ volatile unsigned long __iomem *mailbox_context_rpmsg; // mailbox buffer context is 64 Bytess
+@@ -118,12 +150,20 @@ static bool cvi_rpmsg_notify(struct virtqueue *vq)
+ 	mu_rpmsg = rpvq->vq_id << 16;
+ 	mutex_lock(&rpvq->rpdev->lock);
+ 
++	if (queue_id == 1) {			/* TX notify: probe b1 */
++		rtt_b1_ns = ktime_get_ns();
++		rtt_b1_tick = get_cycles();
++	}
++
+ 	/* send the index of the triggered virtqueue as the mu payload */
+ 	struct cmdqu_t cmd = {0};
+     cmd.param_ptr = mu_rpmsg;
+ 	cmd.cmd_id = queue_id;
+ 	rtos_cmdqu_send(&cmd);
+ 
++	if (queue_id == 1)
++		rtt_b1d_ns = ktime_get_ns();	/* b1_done */
++
+ 	mutex_unlock(&rpvq->rpdev->lock);
+ 
+ 	return true;
+@@ -301,12 +341,14 @@ static int set_vring_phy_buf(struct platform_device *pdev,
+ 
+ static volatile int rtos_cmd_id;
+ 
+-static void rpmsg_work_handler(struct work_struct *work)
++static void rpmsg_work_handler(struct kthread_work *work)
+ {
+ 	// virtqueue callback
+ 	struct cvi_virdev *cvi_virdev_inst = container_of(vdev_isr, struct cvi_virdev, vdev);
+ 	int i;
+ 
++	rtt_b2b_ns = ktime_get_ns();		/* workqueue latency endpoint */
++
+ 	/*
+ 	 * Bug#2 fix: the old code dispatched only vq[rtos_cmd_id], where
+ 	 * rtos_cmd_id is a single global written by the mailbox handler. Because
+@@ -323,8 +365,18 @@ static void rpmsg_work_handler(struct work_struct *work)
+ 
+ static void rtos_cmdqu_handler(unsigned char cmd_id, unsigned int param_ptr, void* device_id)
+ {
++	rtt_b2_ns = ktime_get_ns();		/* echo arrival at host */
++	rtt_b2_tick = get_cycles();
+ 	rtos_cmd_id = cmd_id;
+-	schedule_delayed_work(&rpmsg_work, 0);
++	kthread_queue_work(rpmsg_kworker, &rpmsg_work);
++}
++
++static int rpmsg_rtt_show(struct seq_file *m, void *v)
++{
++	seq_printf(m, "%llu %llu %llu %llu %llu %llu\n",
++		   rtt_b1_ns, rtt_b1_tick, rtt_b1d_ns,
++		   rtt_b2_ns, rtt_b2_tick, rtt_b2b_ns);
++	return 0;
+ }
+ 
+ static int cvi_rpmsg_probe(struct platform_device *pdev)
+@@ -334,7 +386,11 @@ static int cvi_rpmsg_probe(struct platform_device *pdev)
+ 
+ 	mbox_reg_rpmsg = (struct mailbox_set_register __iomem *)reg_base;
+ 	mailbox_context_rpmsg = (unsigned long __iomem *)(reg_base + MAILBOX_CONTEXT_OFFSET);
+-	INIT_DELAYED_WORK(&rpmsg_work, rpmsg_work_handler);
++	rpmsg_kworker = kthread_run_worker(0, "cvi_rpmsg");
++	if (IS_ERR(rpmsg_kworker))
++		return PTR_ERR(rpmsg_kworker);
++	sched_set_fifo(rpmsg_kworker->task);
++	kthread_init_work(&rpmsg_work, rpmsg_work_handler);
+ 
+ 	/*
+ 	 * Bug#2 diagnostics: uncached mappings on C906 depend on the T-Head MAE
+@@ -345,6 +401,8 @@ static int cvi_rpmsg_probe(struct platform_device *pdev)
+ 		csr_read(0x5c0), !!(csr_read(0x5c0) & 0x200000UL),
+ 		dev_is_dma_coherent(&pdev->dev));
+ 
++	proc_create_single("rpmsg_rtt", 0444, NULL, rpmsg_rtt_show);
++
+ 	for (i = 0; i < ARRAY_SIZE(cvi_rpmsg_vprocs); i++) {
+ 		struct cvi_rpmsg_vproc *rpdev = &cvi_rpmsg_vprocs[i];
+ 
+-- 
+2.34.1
+

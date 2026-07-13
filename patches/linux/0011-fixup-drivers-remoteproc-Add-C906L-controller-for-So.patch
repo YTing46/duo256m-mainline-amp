@@ -1,0 +1,97 @@
+From 0ffdb50e7533c586f596d812abf46551e72fe68d Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 7 Jul 2026 22:34:45 +0800
+Subject: [PATCH 11/13] fixup! drivers: remoteproc: Add C906L controller for
+ Sophgo CV1800B SoC
+
+Local fixes to the v2 series for testing on SG2002 Duo256M, to be
+folded into v3 / reported on-list:
+
+- use __force casts for the ioremap_wc()'d carveout va to fix the
+  sparse address-space warning reported by the kernel test robot
+- drop the .remove callback: probe uses devm_rproc_add(), so the
+  manual rproc_del() in remove would double-delete the rproc on
+  unbind (devm teardown calls rproc_del again)
+- dt-binding: drop the disallowed 'additionalItems: true' (Krzysztof's
+  v2 review) and add sg2000/sg2002 compatibles with cv1800b fallback
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../bindings/remoteproc/sophgo,cv1800b-c906l.yaml    |  9 +++++++--
+ drivers/remoteproc/sophgo_cv1800b_c906l.c            | 12 ++----------
+ 2 files changed, 9 insertions(+), 12 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/remoteproc/sophgo,cv1800b-c906l.yaml b/Documentation/devicetree/bindings/remoteproc/sophgo,cv1800b-c906l.yaml
+index 2061c2fd6ba3..564ad8a2e480 100644
+--- a/Documentation/devicetree/bindings/remoteproc/sophgo,cv1800b-c906l.yaml
++++ b/Documentation/devicetree/bindings/remoteproc/sophgo,cv1800b-c906l.yaml
+@@ -15,7 +15,13 @@ description:
+ 
+ properties:
+   compatible:
+-    const: sophgo,cv1800b-c906l
++    oneOf:
++      - const: sophgo,cv1800b-c906l
++      - items:
++          - enum:
++              - sophgo,sg2000-c906l
++              - sophgo,sg2002-c906l
++          - const: sophgo,cv1800b-c906l
+ 
+   firmware-name:
+     maxItems: 1
+@@ -45,7 +51,6 @@ properties:
+       - description: vdev buffer
+       - description: vring0
+       - description: vring1
+-    additionalItems: true
+ 
+   resets:
+     maxItems: 1
+diff --git a/drivers/remoteproc/sophgo_cv1800b_c906l.c b/drivers/remoteproc/sophgo_cv1800b_c906l.c
+index 42258f072619..c589959ce09e 100644
+--- a/drivers/remoteproc/sophgo_cv1800b_c906l.c
++++ b/drivers/remoteproc/sophgo_cv1800b_c906l.c
+@@ -44,7 +44,7 @@ static int cv1800b_c906l_mem_alloc(struct rproc *rproc,
+ 		return -ENOMEM;
+ 
+ 	/* Update memory entry va */
+-	mem->va = (void *)va;
++	mem->va = (__force void *)va;
+ 
+ 	return 0;
+ }
+@@ -52,7 +52,7 @@ static int cv1800b_c906l_mem_alloc(struct rproc *rproc,
+ static int cv1800b_c906l_mem_release(struct rproc *rproc,
+ 				     struct rproc_mem_entry *mem)
+ {
+-	iounmap((void __iomem *)mem->va);
++	iounmap((__force void __iomem *)mem->va);
+ 	return 0;
+ }
+ 
+@@ -210,13 +210,6 @@ static int cv1800b_c906l_probe(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
+-static void cv1800b_c906l_remove(struct platform_device *pdev)
+-{
+-	struct rproc *rproc = platform_get_drvdata(pdev);
+-
+-	rproc_del(rproc);
+-}
+-
+ static const struct of_device_id cv1800b_c906l_of_match[] = {
+ 	{ .compatible = "sophgo,cv1800b-c906l" },
+ 	{ /* sentinel */ },
+@@ -225,7 +218,6 @@ MODULE_DEVICE_TABLE(of, cv1800b_c906l_of_match);
+ 
+ static struct platform_driver cv1800b_c906l_driver = {
+ 	.probe = cv1800b_c906l_probe,
+-	.remove = cv1800b_c906l_remove,
+ 	.driver = {
+ 		.name = "cv1800b-c906l",
+ 		.of_match_table = cv1800b_c906l_of_match,
+-- 
+2.34.1
+

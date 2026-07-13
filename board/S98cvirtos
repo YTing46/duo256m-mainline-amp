@@ -1,0 +1,33 @@
+#!/bin/sh
+# S98cvirtos - restart the C906L under Linux control at boot.
+# The entire dance runs in a BACKGROUND subshell: a hung remoteproc
+# sysfs write (upstream driver D-state bug, 2026-07-13) must never
+# block rcS -- S99user/usb-adb must always run.
+
+(
+T=/mnt/diag-boot
+mkdir -p "$T" 2>/dev/null
+TR="$T/trace.txt"
+echo "S98cvirtos begin kernel=$(uname -r)" > "$TR"; sync
+
+R=/sys/class/remoteproc/remoteproc0
+[ -e "$R/state" ] || { echo "no remoteproc0" >> "$TR"; exit 0; }
+
+i=0
+while [ $i -lt 50 ] && [ ! -e /dev/rpmsg_ctrl0 ]; do
+	sleep 0.1; i=$((i + 1))
+done
+echo "wait done i=$i state=$(cat $R/state 2>/dev/null)" >> "$TR"; sync
+
+echo start > "$R/state" 2>/dev/null
+echo "start1 rc=$? state=$(cat $R/state 2>/dev/null)" >> "$TR"; sync
+sleep 1
+echo stop > "$R/state" 2>/dev/null
+echo "stop rc=$? state=$(cat $R/state 2>/dev/null)" >> "$TR"; sync
+sleep 1
+echo start > "$R/state" 2>/dev/null
+echo "start2 rc=$? state=$(cat $R/state 2>/dev/null)" >> "$TR"; sync
+echo "S98cvirtos done" >> "$TR"; sync
+) &
+
+exit 0

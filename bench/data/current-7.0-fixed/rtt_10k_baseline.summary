@@ -1,0 +1,3 @@
+rpmsg: using /dev/rpmsg_ctrl0 and /dev/rpmsg3
+samples=10000 clock_overhead=960ns
+min=148000 p50=154920 p90=163760 p99=209480 max=3223400 (ns)
