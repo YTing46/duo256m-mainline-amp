@@ -1,7 +1,7 @@
 From b1d7c6456ca8011a8e400ffa811d7dd8a4adac90 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 7 Jul 2026 19:32:03 +0800
-Subject: [PATCH 1/6] comm: quiesce mailbox before unmasking its IRQ
+Subject: [PATCH 1/7] comm: quiesce mailbox before unmasking its IRQ
  (boot-lottery deafness)
 
 The mailbox interrupt toward the C906L is edge-latched: if a host kick

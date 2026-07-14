@@ -1,7 +1,7 @@
 From 2a652bd0ab92f8a329db544f8ba00f5deb37a416 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Wed, 15 Jul 2026 00:11:55 +0800
-Subject: [PATCH 6/6] comm: poke both virtqueues on any host kick
+Subject: [PATCH 6/7] comm: poke both virtqueues on any host kick
 
 Host kicks are fire-and-forget now (mailbox TXDONE_BY_ACK) and share
 one slot, so kicks for different vqs can coalesce; env_isr just

@@ -1,0 +1,47 @@
+From c7edd0890e3823801d366eb876a1adc1562b910e Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Wed, 15 Jul 2026 00:42:36 +0800
+Subject: [PATCH 7/7] comm/platform: hygiene - cache prototypes include, legacy
+ cmdqu reply hazard note
+
+---
+ cvitek/driver/rpmsg/src/rpmsg_platform.c |  1 +
+ cvitek/task/comm/src/riscv64/comm_main.c | 10 +++++++++-
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/cvitek/driver/rpmsg/src/rpmsg_platform.c b/cvitek/driver/rpmsg/src/rpmsg_platform.c
+index 8e7a328..44c2ed6 100644
+--- a/cvitek/driver/rpmsg/src/rpmsg_platform.c
++++ b/cvitek/driver/rpmsg/src/rpmsg_platform.c
+@@ -14,6 +14,7 @@
+ /* cvitek includes. */
+ #include "rtos_cmdqu.h"
+ #include "mailbox.h"
++#include "arch_helpers.h"   /* flush/inv_dcache_range prototypes */
+ 
+ #if defined(RL_USE_ENVIRONMENT_CONTEXT) && (RL_USE_ENVIRONMENT_CONTEXT == 1)
+ #error "This RPMsg-Lite port requires RL_USE_ENVIRONMENT_CONTEXT set to 0"
+diff --git a/cvitek/task/comm/src/riscv64/comm_main.c b/cvitek/task/comm/src/riscv64/comm_main.c
+index 69b3d76..ebbccae 100755
+--- a/cvitek/task/comm/src/riscv64/comm_main.c
++++ b/cvitek/task/comm/src/riscv64/comm_main.c
+@@ -443,7 +443,15 @@ void prvCmdQuRunTask(ULONG thread_input)
+ 			goto send_label;
+ 		default:
+ 		send_label:
+-			/* used to send command to linux*/
++			/*
++			 * Legacy cmdqu reply path (CMD_TEST_x etc.). NOTE:
++			 * mailbox_send() scans for a "free" slot by checking
++			 * the context words, which the mainline host never
++			 * zeroes after reading -- after 8 replies every slot
++			 * looks busy and this spins forever. Unreachable with
++			 * the mainline host (nothing sends cmdqu commands);
++			 * left for the vendor-kernel A/B fallback only.
++			 */
+ 			mailbox_send(1);
+ 			break;
+ 		}
+-- 
+2.34.1
+

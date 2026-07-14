@@ -1,7 +1,7 @@
 From aafff48b760674b515c4ff02c516661e9f6dd2a4 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 7 Jul 2026 21:29:18 +0800
-Subject: [PATCH 2/6] comm: strip hot-path printf probes; carry s1/s3 rdtime
+Subject: [PATCH 2/7] comm: strip hot-path printf probes; carry s1/s3 rdtime
  stamps in the echo
 
 Remove the RT: DBG serial prints from the pingpong hot path (each line

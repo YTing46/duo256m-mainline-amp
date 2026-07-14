@@ -55,11 +55,12 @@ static int env_int(const char *name, int def)
 	return (s && *s) ? atoi(s) : def;
 }
 
-static int read_probes(unsigned long long p[6])
+static int read_probes(unsigned long long p[9])
 {
-	char buf[256];
+	char buf[384];
 	int fd = open("/proc/rpmsg_rtt", O_RDONLY);
 	ssize_t n;
+	int got;
 
 	if (fd < 0)
 		return -1;
@@ -68,8 +69,11 @@ static int read_probes(unsigned long long p[6])
 	if (n <= 0)
 		return -1;
 	buf[n] = 0;
-	return sscanf(buf, "%llu %llu %llu %llu %llu %llu",
-		      &p[0], &p[1], &p[2], &p[3], &p[4], &p[5]) == 6 ? 0 : -1;
+	p[6] = p[7] = p[8] = 0;
+	got = sscanf(buf, "%llu %llu %llu %llu %llu %llu %llu %llu %llu",
+		     &p[0], &p[1], &p[2], &p[3], &p[4], &p[5],
+		     &p[6], &p[7], &p[8]);
+	return got >= 6 ? got : -1;
 }
 
 static int cmp_ll(const void *a, const void *b)
@@ -92,6 +96,7 @@ int main(void)
 	int warmup = env_int("RPMSG_RTT_WARMUP", 5);
 	int sizes[64], nsizes = 0;
 	long long *rtt, *trans, *turn, *wake, *wwait, *sysin, *notif;
+	long long *wvq, *wdlv, *wsch, *wret;
 	int si;
 
 	const char *sz_env = getenv("RPMSG_RTT_SIZES");
@@ -116,6 +121,10 @@ int main(void)
 	wwait = malloc(sizeof(long long) * iters);
 	sysin = malloc(sizeof(long long) * iters);
 	notif = malloc(sizeof(long long) * iters);
+	wvq   = malloc(sizeof(long long) * iters);
+	wdlv  = malloc(sizeof(long long) * iters);
+	wsch  = malloc(sizeof(long long) * iters);
+	wret  = malloc(sizeof(long long) * iters);
 	if (!rtt || !trans || !turn || !wake || !wwait || !sysin || !notif)
 		return 1;
 
@@ -143,7 +152,7 @@ int main(void)
 
 		for (i = 0; i < warmup + iters; i++) {
 			struct stamp_hdr h;
-			unsigned long long p[6];
+			unsigned long long p[9];
 			long long t0, t1;
 			ssize_t wn, rn;
 
@@ -157,8 +166,12 @@ int main(void)
 				continue;
 
 			memcpy(&h, rx, sizeof(h));
+			int nprobes = read_probes(p);
+			int have_probes = (nprobes >= 6);
+			int have_wake = (nprobes >= 9 && p[6] && p[7] && p[8]);
+
 			if (wn != size || rn != expect ||
-			    h.magic != STAMP_MAGIC || read_probes(p) != 0) {
+			    h.magic != STAMP_MAGIC) {
 				printf("%d,%d,%lld,%lld,%lld,,,,,,,err\n",
 				       i + 1, size, t0, t1, t1 - t0);
 				fprintf(stderr,
@@ -168,6 +181,12 @@ int main(void)
 				goto next_size;
 			}
 
+			/*
+			 * Host-side decomposition probes came from the vendor
+			 * glue's /proc/rpmsg_rtt; on the native remoteproc-vdev
+			 * stack they are gone (for now), but rtt and the
+			 * firmware-stamped turnaround are still exact.
+			 */
 			{
 				long long b1 = p[0], b1t = p[1], b1d = p[2];
 				long long b2 = p[3], b2t = p[4], b2b = p[5];
@@ -175,13 +194,27 @@ int main(void)
 				long long v_rev = (b2t - (long long)h.s3_ticks) * TICK_NS;
 
 				rtt[ok]   = t1 - t0;
+				turn[ok]  = ((long long)h.s3_ticks -
+					     (long long)h.s1_ticks) * TICK_NS;
+				if (!have_probes) {
+					sysin[ok] = notif[ok] = trans[ok] = 0;
+					wwait[ok] = wake[ok] = 0;
+					goto row_out;
+				}
 				sysin[ok] = b1 - t0;
 				notif[ok] = b1d - b1;
 				trans[ok] = v_fwd + v_rev;
-				turn[ok]  = ((long long)h.s3_ticks -
-					     (long long)h.s1_ticks) * TICK_NS;
 				wwait[ok] = b2b - b2;
 				wake[ok]  = t1 - b2b;
+				if (have_wake) {
+					wvq[ok]  = (long long)p[6] - b2b;
+					wdlv[ok] = (long long)(p[7] - p[6]);
+					wsch[ok] = (long long)(p[8] - p[7]);
+					wret[ok] = t1 - (long long)p[8];
+				} else {
+					wvq[ok] = wdlv[ok] = wsch[ok] = wret[ok] = 0;
+				}
+row_out:;
 
 				printf("%d,%d,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,ok\n",
 				       i + 1, size, t0, t1, rtt[ok], sysin[ok],
@@ -199,13 +232,19 @@ next_size:
 			qsort(turn, ok, sizeof(long long), cmp_ll);
 			qsort(wwait, ok, sizeof(long long), cmp_ll);
 			qsort(wake, ok, sizeof(long long), cmp_ll);
+			qsort(wvq, ok, sizeof(long long), cmp_ll);
+			qsort(wdlv, ok, sizeof(long long), cmp_ll);
+			qsort(wsch, ok, sizeof(long long), cmp_ll);
+			qsort(wret, ok, sizeof(long long), cmp_ll);
 			fprintf(stderr,
-				"%7d %6d | %8lld %8lld %8lld | %8lld %8lld %8lld %8lld %8lld\n",
+				"%7d %6d | %8lld %8lld %8lld | %8lld %8lld %8lld %8lld %8lld | wk: %6lld %6lld %6lld %6lld\n",
 				size, ok, pct(rtt, ok, 0.5), pct(rtt, ok, 0.9),
 				pct(rtt, ok, 0.99), pct(sysin, ok, 0.5),
 				pct(notif, ok, 0.5), pct(trans, ok, 0.5),
 				pct(turn, ok, 0.5),
-				pct(wwait, ok, 0.5) + pct(wake, ok, 0.5));
+				pct(wwait, ok, 0.5) + pct(wake, ok, 0.5),
+				pct(wvq, ok, 0.5), pct(wdlv, ok, 0.5),
+				pct(wsch, ok, 0.5), pct(wret, ok, 0.5));
 		}
 	}
 
