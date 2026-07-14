@@ -1,4 +1,4 @@
-From d9cbe40e9e43ac805cf176e64702687a42cee81c Mon Sep 17 00:00:00 2001
+From c6290f9673d99d54a48d355c5c51f19afb8f0af2 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Wed, 15 Jul 2026 00:21:52 +0800
 Subject: [PATCH 22/23] rpmsg: probe the wake path for RTT decomposition

@@ -1,4 +1,4 @@
-From 8877235be1b24e44719e9e229c81f25db5471583 Mon Sep 17 00:00:00 2001
+From edc901527c7627f537d19cbe697898858c540598 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 14 Jul 2026 21:28:42 +0800
 Subject: [PATCH 17/23] remoteproc: virtio: inherit DMA coherence from the

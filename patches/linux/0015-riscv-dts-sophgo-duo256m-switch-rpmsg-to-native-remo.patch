@@ -1,4 +1,4 @@
-From d5e126afea8b156a438c412c2181cfb496d0d5bc Mon Sep 17 00:00:00 2001
+From 1a7a2d9612154b2bd44f2f92e17781c667fc2597 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 14 Jul 2026 20:22:19 +0800
 Subject: [PATCH 15/23] riscv: dts: sophgo: duo256m: switch rpmsg to native

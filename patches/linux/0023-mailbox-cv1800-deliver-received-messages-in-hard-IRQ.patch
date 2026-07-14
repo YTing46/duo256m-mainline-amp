@@ -1,4 +1,4 @@
-From c57796af5eb40adce8c64e2de07a9e415f3cabb7 Mon Sep 17 00:00:00 2001
+From 5afd8f1e8058b87a0b5540a6e33a49132a368bc5 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Wed, 15 Jul 2026 00:25:43 +0800
 Subject: [PATCH 23/23] mailbox: cv1800: deliver received messages in hard-IRQ

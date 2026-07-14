@@ -1,4 +1,4 @@
-From 43e8a5f5f88cf8c652e25b7b8a915bf5e5e9f643 Mon Sep 17 00:00:00 2001
+From d820b0a54122c602b07e60be687dd6851a04198c Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 7 Jul 2026 22:44:56 +0800
 Subject: [PATCH 12/23] riscv: dts: sg2002: switch Duo256M to the upstream

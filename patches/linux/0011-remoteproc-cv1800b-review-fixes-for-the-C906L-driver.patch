@@ -1,20 +1,13 @@
-From 0ffdb50e7533c586f596d812abf46551e72fe68d Mon Sep 17 00:00:00 2001
+From fa52fc007a0fa1633ede18b161c1c95be7414247 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 7 Jul 2026 22:34:45 +0800
-Subject: [PATCH 11/23] fixup! drivers: remoteproc: Add C906L controller for
- Sophgo CV1800B SoC
+Subject: [PATCH 11/23] remoteproc: cv1800b: review fixes for the C906L driver
 
-Local fixes to the v2 series for testing on SG2002 Duo256M, to be
-folded into v3 / reported on-list:
-
-- use __force casts for the ioremap_wc()'d carveout va to fix the
-  sparse address-space warning reported by the kernel test robot
-- drop the .remove callback: probe uses devm_rproc_add(), so the
-  manual rproc_del() in remove would double-delete the rproc on
-  unbind (devm teardown calls rproc_del again)
-- dt-binding: drop the disallowed 'additionalItems: true' (Krzysztof's
-  v2 review) and add sg2000/sg2002 compatibles with cv1800b fallback
-
+Address the v2 review findings before wiring the driver up: sparse
+__force annotations on the carveout iomem casts, drop the .remove
+callback that double-deleted the devm-managed rproc, and allow the
+sg2000/sg2002 per-SoC compatibles with the cv1800b fallback in the
+binding.
 ---
  .../bindings/remoteproc/sophgo,cv1800b-c906l.yaml    |  9 +++++++--
  drivers/remoteproc/sophgo_cv1800b_c906l.c            | 12 ++----------

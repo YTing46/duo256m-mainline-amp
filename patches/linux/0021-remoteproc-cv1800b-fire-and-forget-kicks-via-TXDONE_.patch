@@ -1,4 +1,4 @@
-From 32257ff8eecd43812326fd47edbb9bf1ea43e9ef Mon Sep 17 00:00:00 2001
+From 8ff0ed22bdaa9a4503fac678f8b28863645d7e75 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Wed, 15 Jul 2026 00:12:13 +0800
 Subject: [PATCH 21/23] remoteproc: cv1800b: fire-and-forget kicks via

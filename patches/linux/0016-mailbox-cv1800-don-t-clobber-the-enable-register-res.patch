@@ -1,4 +1,4 @@
-From 4d07cd7bd80f5113c89c78cf183fdc82bb8c7a1a Mon Sep 17 00:00:00 2001
+From 0cf05562a60c500cee08d13ae8ff67c2c9947f29 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 14 Jul 2026 21:28:42 +0800
 Subject: [PATCH 16/23] mailbox: cv1800: don't clobber the enable register;
