@@ -377,10 +377,16 @@ devmem 直讀 mailbox MMIO：`en2=int2=raw2=0x1F`——五個中斷 **pending + 
 - **Bug #3（edge-latch 開機樂透）根因定位並修復驗證（§4d）**：故意重現觸發情境驗證，commit b1d7c64。
 - **Task 5 延遲量測與第一輪優化完成（§7）**：decomp 拆解體系建立，155→~133µs（-14%），A1/B2 落地 commit。
 - **Payload sweep 完成（§7.4）**：韌體支援 496B 可變長 echo（ff51694），4→496B 曲線 152→162µs（+6.6%），成長全在 host wake（+6.4µs）與韌體 memcpy（+2.0µs），transport 持平；斜率比 Henry 平（+10.1 vs +17.9µs），常數項仍輸 ~30µs。
+- **Upstream remoteproc 打通 + SEC_SYS clock 根因修復（§8）**：Junhui Liu v2 系列上板
+  （+3 個 review 修正），adb 暴斃事件三層翻案到底——真根因是 `clk_efuse` 被
+  `clk_disable_unused` 關掉、SEC_SYS 任何存取懸死整板（一行 devmem 重現）；
+  正式修法 sec_sys syscon 掛 `clocks = <&clk CLK_EFUSE>`（commit 36da34aaed2a），
+  start/stop/start + pingpong 全過，`clk_ignore_unused` 退役。
 
 待辦：
+- lore 報告：v2 三修正 + double-delete 發現 + clock 依賴 bug（最小重現 + 修法）+ SG2002 支援 + Tested-by。
 - 優化續攻：wake 62.7µs 細拆（payload sweep 證實幾乎全為常數開銷）、workwait ISR 尾段、384→416B wake 階梯跳變成因。
-- 筆記整理發表（HackMD）；dma-noncoherent DTS 修法考慮 upstream。
+- 筆記整理發表（HackMD）。
 
 補充方法論筆記（供後續除錯）：
 - **只有實體斷電才真正重置**小核與 channel；`adb reboot` 是 no-op（無 restart handler）。從 running 狀態下 `echo stop; echo start` 可乾淨重啟小核並重載韌體，供韌體迭代（但不清 DRAM vring 殘留，索引仍會累積）。
@@ -452,6 +458,116 @@ devmem 直讀 mailbox MMIO：`en2=int2=raw2=0x1F`——五個中斷 **pending + 
 **累計：155 → ~133µs（-14%）**。剩餘目標（decomp p50）：wake 62.7（最大塊，需 decomp5 級細拆 recv_done/派發/喚醒；payload sweep 顯示它幾乎全是常數開銷，不是 copy）、workwait 28.5（rtos_cmdqu ISR 尾段在硬體鎖下的 slot 排空）、transport 25.4（vs Henry 17.2）、384→416B 的 wake 階梯跳變成因。
 
 數據存檔：`report/current-7.0-fixed/`（baseline、rtkthread、b2cached 三份 10k CSV + summary、`rtt_payload_sweep.csv` 17 檔×2000 筆）。
+
+---
+
+## 8. Upstream remoteproc 之路：adb 暴斃事件與 SEC_SYS 時脈根因（2026-07-13〜14）
+
+前七章的系統跑在 vendor 移植版的 rproc/rpmsg glue 上。本章記錄把 C906L 的生命週期管理換成
+**upstream 候選 driver**（Junhui Liu 的 remoteproc v2 系列，2025-07-28 起停滯在 patchwork
+state "new"）的過程——以及它引爆的、整個專題最深的一個坑：一個 driver 完全無辜、
+根因在 clock framework 層的整板懸死。誠實記錄三層翻案與兩個假陽性。
+
+### 8.1 素材與準備
+
+- v2 系列兩個 patch（binding + driver，共 239 行）以 `git am` 套用、保留原作者署名。
+  小插曲：patchwork 的 `/mbox/` 端點被 Anubis 擋，改從 REST API 的 JSON 重組 mbox。
+- 套用時順手修了三個 review 缺陷：sparse `__iomem` cast、binding 的
+  `additionalItems: true`（Krzysztof 已點名）、以及 `devm_rproc_add` 配上 `.remove`
+  裡手動 `rproc_del` 的 double-delete。
+- DTS 接線：新增 `sec_sys` syscon（0x020B0000，C906L enable bit13 + bootaddr @0x20，
+  即 vendor FSBL 開小核所碰的暫存器）+ rproc 節點（`resets = <&rst RST_CPUSYS2>`）。
+
+### 8.2 adb 暴斃與三層翻案
+
+新 kernel 一開機，adb 死透。序列埠只能讀不能寫（PL2303 TX 故障），一時之間整塊板
+像磚。第一反應全錯：懷疑板子燒了、懷疑 USB 線是充電線（**冤枉了線材**——使用者指出
+掛掉前用的就是同一條，回頭檢討才走上正軌）。之後靠 SD 卡鑑識（讀卡機改 init script、
+在 rcS 埋每支腳本的 BEGIN/END trace）一層層剝：
+
+1. **第一層：rcS 開機鏈凍結。** 真正啟動 adb 的不是 S97adb（那只做 gadget probe），
+   而是 S99user → `/mnt/system/usb.sh` → `usb-adb.sh`（mount functionfs、起 adbd、
+   寫 UDC）。S98cvirtos 對 rproc 的 sysfs 操作把 rcS 卡死 → S99user 永遠不執行 →
+   adb 根本沒被啟動。改成 S97 先起診斷 adb、S98 丟背景 subshell 後，adb 活了，但——
+2. **第二層：「`echo start` D-state 懸死」是誤讀。** trace 斷在 start 之後，一開始
+   解讀為 sysfs 寫入卡死。後來發現連 `timeout` 包住的背景 trace 追加、`insmod`、
+   functionfs 設定**全部**凍住——不是那一個 write 卡住，是 start 之後所有碰 rootfs
+   的 I/O 都死了。症狀在檔案系統層，兇手不在。
+3. **第三層（真根因）：driver 無辜。** 決定性實驗：在**完全不含 upstream driver**
+   的已知良好 kernel 上，一行 `devmem 0x020B0004`（純讀）就讓整板懸死——MMC 陪葬、
+   rootfs I/O 全滅。任何人碰 SEC_SYS 都會死；upstream driver 只是開機後第一個碰的人。
+
+兩個假陽性也記錄在案：
+
+- **「ThreadX 在跑 = driver 有效」——假。** FSBL 上電就把 C906L 開起來了
+  （`fsbl/plat/cv181x/platform.c`），driver 沒做事韌體照樣跑。真驗證要看
+  stop/start 之後韌體序列時間戳**歸零**。
+- **`olddefconfig` 在切分支後悄悄洗掉 `CONFIG_SOPHGO_CV1800B_C906L`**，第一顆驗證
+  kernel 根本沒有 driver，而 uname 版號同為 00016 無法區分——靠
+  `grep -c c906l /proc/kallsyms`（0 vs 8）才抓到。教訓：每次 olddefconfig 後驗 kallsyms。
+
+### 8.3 兇手：`clk_disable_unused` 對上沒寫進 DT 的時脈依賴
+
+機制拆解：
+
+- mainline 在開機尾聲（late_initcall）跑 `clk_disable_unused()`：**沒有任何 DT 節點
+  認領的 clock 一律關掉**。這是刻意設計（省電 + 逼 driver 誠實申報），vendor 5.10 沒有
+  這個行為。
+- SEC_SYS 暫存器區塊（0x020B0000）的匯流排介面吃 **`clk_efuse`（CLK_EN_0 bit 11）**。
+  這顆 SoC 對「存取無時脈區塊」的反應不是 bus error，而是 AXI interconnect 直接懸死。
+- 證據鏈在 vendor 自己的 code 裡：`linux_5.10/drivers/crypto/cvitek-spacc.c` 每次碰
+  0x020b0000 前後手動 `clk_prepare_enable(clk_efuse)` / disable——vendor 知道這條依賴，
+  但用 `clk_get_sys(NULL, "clk_efuse")` 繞過 DT 硬編在 C 裡，device tree 隻字未提。
+  在 vendor 封閉花園裡沒人驗收這份合約；一到 mainline 的規則下就是地雷。
+- 四個條件同時成立才會踩到：跑 mainline（有 clk_disable_unused）×
+  開機完成後才碰 SEC_SYS（sysfs start）× binding 沒申報 clock（v2 系列的缺）×
+  沒掛 `clk_ignore_unused`。原作者大概在 probe 階段 auto-boot（clock 還沒被關）
+  或帶著 `clk_ignore_unused` 測試，所以連他自己都沒踩到。
+
+過渡驗證：`CONFIG_CMDLINE="clk_ignore_unused"` 烤進 kernel（u-boot env 不可達，
+FIT 無 bootargs）→ 全系統在 upstream driver 上打通：S98 start/stop/start 全 rc=0、
+韌體時間戳歸零（真・driver 重開小核）、pingpong RTT ~153µs。但這是大槌——
+整個節能機制陪葬，upstream 不可能收。
+
+### 8.4 正式修法：把依賴寫回 device tree 該在的位置
+
+```dts
+sec_sys: syscon@20b0000 {
+        compatible = "sophgo,sg2002-sec-sys", "syscon";
+        reg = <0x020b0000 0x1000>;
+        clocks = <&clk CLK_EFUSE>;
+};
+```
+
+一行 `clocks`。mainline syscon core（`drivers/mfd/syscon.c`）會把第一顆 clock attach
+到 regmap-mmio，之後**每次 regmap 讀寫自動在前後 `clk_enable`/`clk_disable`**
+（just-in-time）——rproc driver 一行 C 都不用改。commit `36da34aaed2a`，
+`clk_ignore_unused` 從 cmdline 移除。
+
+驗證（gate 硬體狀態 = N 之下）：
+
+```
+clk_efuse   0(en) 1(prep)  25000000  N   syscon@20b0000   ← consumer 掛上、idle 時 gate 關閉
+start1 rc=0 state=running / stop rc=0 / start2 rc=0       ← 開機自動 S98 全過
+pingpong RTT p50 ~155µs                                    ← 通訊正常
+```
+
+注意 `devmem` 直讀 SEC_SYS **仍會懸死**（bypass regmap）——行為正確，勿當回歸測試。
+
+風險控制值得一記：測試 kernel 上板前先停用 S98 自動 start（開機路徑上沒有任何東西
+碰 SEC_SYS）→ 就算 clock 猜錯，斷電重開即恢復，永遠不需要拆卡救援；卡上常備三顆
+kernel（clkfix / ignoreunused 備援 / 會懸死的對照組，後者檔名直接改成 `*-WEDGES-*` 防誤用）。
+另外這塊板的 warm reboot（`reboot` 指令）會卡在 FSBL 不回來，驗證一律實體斷電。
+
+### 8.5 收穫
+
+- **症狀層 ≠ 兇手層**：I/O 全死的根因在 clock framework，中間隔了「匯流排懸死 →
+  MMC 死 → rootfs 凍結 → init 鏈斷 → adb 沒起」五層轉譯。每層都要用實驗釘死再往下。
+- **最小重現是king**：把「upstream driver 掛了 adb」壓縮成「一行 devmem 懸死好 kernel」，
+  嫌疑範圍瞬間從 239 行 driver 縮成 SoC 硬體行為。
+- **翻案要誠實列帳**：線材冤案、ThreadX 假陽性、D-state 誤讀——記下來，下次省時間。
+- 產出全部可回饋 upstream：v2 系列三個修正 + double-delete 發現 + clock 依賴 bug
+  報告（含最小重現與 syscon clocks 修法）+ SG2002 支援 + 真機 Tested-by。
 
 ---
 
