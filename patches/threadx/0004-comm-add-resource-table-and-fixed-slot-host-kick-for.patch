@@ -1,0 +1,194 @@
+From 0919ff4da5625e1365f9c8a7e25352876fcebefa Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 14 Jul 2026 20:22:10 +0800
+Subject: [PATCH 4/5] comm: add resource table and fixed-slot host kick for
+ mainline remoteproc
+
+Resource table (.resource_table section, pulled in via EXTERN) exposes
+the rpmsg vdev + both vrings at the fixed addresses rpmsg-lite is
+hardwired to, so the mainline remoteproc core creates the virtio-rpmsg
+device instead of the out-of-tree cvitek glue.
+
+platform_notify now kicks the host on fixed mailbox slot 7: the
+mainline cv1800-mailbox driver owns one RX channel and never zeroes
+received slot contents, so the vendor free-slot scan would starve
+after 8 sends. TX-done = host clearing our enable bit. Still
+compatible with the vendor rtos_cmdqu host ISR (scans all slots,
+clears en + content).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ cvitek/driver/rpmsg/src/rpmsg_platform.c | 33 +++++++++-
+ cvitek/scripts/cv181x_lscript.ld         |  9 +++
+ cvitek/task/comm/src/riscv64/rsc_table.c | 77 ++++++++++++++++++++++++
+ 3 files changed, 116 insertions(+), 3 deletions(-)
+ create mode 100644 cvitek/task/comm/src/riscv64/rsc_table.c
+
+diff --git a/cvitek/driver/rpmsg/src/rpmsg_platform.c b/cvitek/driver/rpmsg/src/rpmsg_platform.c
+index 357559b..af16ae4 100644
+--- a/cvitek/driver/rpmsg/src/rpmsg_platform.c
++++ b/cvitek/driver/rpmsg/src/rpmsg_platform.c
+@@ -13,6 +13,7 @@
+ 
+ /* cvitek includes. */
+ #include "rtos_cmdqu.h"
++#include "mailbox.h"
+ 
+ #if defined(RL_USE_ENVIRONMENT_CONTEXT) && (RL_USE_ENVIRONMENT_CONTEXT == 1)
+ #error "This RPMsg-Lite port requires RL_USE_ENVIRONMENT_CONTEXT set to 0"
+@@ -62,13 +63,39 @@ int32_t platform_deinit_interrupt(uint32_t vector_id)
+     return 0;
+ }
+ 
++/*
++ * Kick the host on a FIXED mailbox slot instead of the vendor free-slot
++ * scan. The mainline cv1800-mailbox driver on the host owns exactly one
++ * RX channel (slot 7) and, unlike the vendor rtos_cmdqu ISR, never zeroes
++ * a received slot's context words -- so the free-slot scan would see every
++ * slot permanently busy after 8 sends and starve.
++ *
++ * TX-done: the host ISR clears our enable bit on receipt; spin on it
++ * before overwriting the slot. The host may deliver a stale/overwritten
++ * payload under back-to-back kicks; it compensates by poking every
++ * virtqueue on any mailbox interrupt, so the payload below is
++ * informational only (cmdqu format, cmd_id 128/129 = vq0/vq1).
++ */
++#define RPMSG_KICK_SLOT 7
++
+ void platform_notify(uint32_t vector_id)
+ {
+-    /* As Linux suggests, use MU->Data Channle 1 as communication channel */
+-    uint32_t msg = (RL_GET_Q_ID(vector_id)) << 16;
++    volatile struct mailbox_set_register *mbox =
++        (struct mailbox_set_register *)MAILBOX_REG_BASE;
++    volatile unsigned long *ctx = (unsigned long *)MAILBOX_REG_BUFF;
++    /* cmdqu layout: byte1 cmd_id, byte3 rtos_valid */
++    unsigned long msg = ((unsigned long)((vector_id & 0x1) + 128) << 8)
++                      | (1UL << 24);
+ 
+     env_lock_mutex(platform_lock);
+-    mailbox_send((vector_id & 0x1)+128);
++
++    /* wait for the host to consume the previous kick on this slot */
++    while (mbox->cpu_mbox_en[SEND_TO_CPU1].mbox_info & (1U << RPMSG_KICK_SLOT))
++        ;
++
++    ctx[RPMSG_KICK_SLOT] = msg;
++    mbox->cpu_mbox_en[SEND_TO_CPU1].mbox_info |= (1U << RPMSG_KICK_SLOT);
++    mbox->mbox_set.mbox_set = (1U << RPMSG_KICK_SLOT);
+ 
+     env_unlock_mutex(platform_lock);
+ }
+diff --git a/cvitek/scripts/cv181x_lscript.ld b/cvitek/scripts/cv181x_lscript.ld
+index 13c5477..e583285 100755
+--- a/cvitek/scripts/cv181x_lscript.ld
++++ b/cvitek/scripts/cv181x_lscript.ld
+@@ -31,6 +31,10 @@ MEMORY
+ /*ENTRY(_vector_table)*/
+ ENTRY(_start)
+ 
++/* Pull the resource table out of libcomm.a even though nothing on the
++ * firmware side references it (the Linux remoteproc core is the consumer). */
++EXTERN(resource_table)
++
+ /* Define the sections, and where they are mapped in memory */
+ 
+ SECTIONS
+@@ -66,6 +70,11 @@ SECTIONS
+    KEEP (*(.note-ABI-tag))
+ } > psu_ddr_0_MEM_0
+ 
++.resource_table : {
++   . = ALIGN(16);
++   KEEP (*(.resource_table))
++} > psu_ddr_0_MEM_0
++
+ .rodata : {
+    . = ALIGN(64);
+    __rodata_start = .;
+diff --git a/cvitek/task/comm/src/riscv64/rsc_table.c b/cvitek/task/comm/src/riscv64/rsc_table.c
+new file mode 100644
+index 0000000..362371a
+--- /dev/null
++++ b/cvitek/task/comm/src/riscv64/rsc_table.c
+@@ -0,0 +1,77 @@
++/*
++ * Resource table for the mainline remoteproc/virtio-rpmsg host stack.
++ *
++ * The Linux remoteproc core reads this from the loaded ELF (section
++ * ".resource_table") and creates the rpmsg virtio device from the vdev
++ * entry. The two vrings carry fixed device addresses matching what
++ * rpmsg_lite_remote_init() is hardwired to (see comm_main.c:
++ * shared_memory = 0x8fc00000, vring1 at +VRING_SIZE), so the host maps
++ * them via the vdev0vring0/1 carveouts instead of allocating elsewhere.
++ *
++ * The vendor Linux glue (cvi_rpmsg_shmem) never looked at this table;
++ * carrying it is backward compatible.
++ */
++
++#include <stddef.h>
++#include <stdint.h>
++#include "rpmsg_platform.h"
++
++#define RSC_VDEV		3
++#define VIRTIO_ID_RPMSG		7
++#define VIRTIO_RPMSG_F_NS	(1U << 0)
++
++#define VDEV0_VRING0_DA		0x8fc00000U
++#define VDEV0_VRING1_DA		(VDEV0_VRING0_DA + VRING_SIZE)
++#define VDEV0_VRING_NUM		256U	/* = RL_BUFFER_COUNT */
++
++struct fw_rsc_vdev_vring {
++	uint32_t da;
++	uint32_t align;
++	uint32_t num;
++	uint32_t notifyid;
++	uint32_t pa;
++};
++
++struct remote_resource_table {
++	/* table header */
++	uint32_t version;
++	uint32_t num;
++	uint32_t reserved[2];
++	uint32_t offset[1];
++	/* vdev entry: fw_rsc_hdr + fw_rsc_vdev + vrings */
++	uint32_t vdev_type;
++	uint32_t vdev_id;
++	uint32_t vdev_notifyid;
++	uint32_t vdev_dfeatures;
++	uint32_t vdev_gfeatures;
++	uint32_t vdev_config_len;
++	uint8_t  vdev_status;
++	uint8_t  vdev_num_of_vrings;
++	uint8_t  vdev_reserved[2];
++	struct fw_rsc_vdev_vring vring[2];
++} __attribute__((packed, aligned(0x10)));
++
++__attribute__((section(".resource_table"), used))
++struct remote_resource_table resource_table = {
++	.version = 1,
++	.num = 1,
++	.offset = {
++		offsetof(struct remote_resource_table, vdev_type),
++	},
++	.vdev_type = RSC_VDEV,
++	.vdev_id = VIRTIO_ID_RPMSG,
++	.vdev_dfeatures = VIRTIO_RPMSG_F_NS,
++	.vdev_num_of_vrings = 2,
++	.vring = {
++		{
++			.da = VDEV0_VRING0_DA,
++			.align = VRING_ALIGN,
++			.num = VDEV0_VRING_NUM,
++		},
++		{
++			.da = VDEV0_VRING1_DA,
++			.align = VRING_ALIGN,
++			.num = VDEV0_VRING_NUM,
++		},
++	},
++};
+-- 
+2.34.1
+

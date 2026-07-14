@@ -1,0 +1,70 @@
+From 4d07cd7bd80f5113c89c78cf183fdc82bb8c7a1a Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 14 Jul 2026 21:28:42 +0800
+Subject: [PATCH 16/17] mailbox: cv1800: don't clobber the enable register;
+ reset rx state at probe
+
+The ISR acked a received channel with writeb(~valid, EN_REG), which
+clears the intended bit but SETS every other bit in the enable
+register: remote senders spin-waiting on their enable bit as tx-done
+then hang, and the shared SET register re-raises our own interrupt
+for channels this CPU transmits on. Read-modify-write just the one
+bit instead.
+
+Also clear the receive-side enable/pending state at probe: the block
+is not reset with the CPU, so stale bits from a previous kernel raise
+a phantom interrupt or wedge a sender's tx-done poll.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ drivers/mailbox/cv1800-mailbox.c | 23 ++++++++++++++++++++++-
+ 1 file changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/mailbox/cv1800-mailbox.c b/drivers/mailbox/cv1800-mailbox.c
+index 4bca9d8be4ba..b62200a0166d 100644
+--- a/drivers/mailbox/cv1800-mailbox.c
++++ b/drivers/mailbox/cv1800-mailbox.c
+@@ -86,11 +86,23 @@ static irqreturn_t cv1800_mbox_irq(int irq, void *dev_id)
+ 	for (i = 0; i < MAILBOX_MAX_CHAN; i++) {
+ 		valid = set & BIT(i);
+ 		if (valid) {
++			u8 en;
++
+ 			mbox->content[i] =
+ 				MBOX_CONTEXT_BASE_INDEX(mbox->mbox_base, i);
+ 			writeb(valid, mbox->mbox_base +
+ 				      MBOX_SET_CLR_REG(RECV_CPU));
+-			writeb(~valid, mbox->mbox_base + MBOX_EN_REG(RECV_CPU));
++			/*
++			 * Clear only this channel's enable bit. Writing the
++			 * complement (~valid) would turn every OTHER bit on,
++			 * polluting the enable register: senders spin-waiting
++			 * on their bit to clear (tx-done) then hang, and the
++			 * shared SET register re-raises our own interrupt for
++			 * channels this CPU transmits on.
++			 */
++			en = readb(mbox->mbox_base + MBOX_EN_REG(RECV_CPU));
++			writeb(en & ~valid, mbox->mbox_base +
++					    MBOX_EN_REG(RECV_CPU));
+ 			ret = IRQ_WAKE_THREAD;
+ 		}
+ 	}
+@@ -174,6 +186,15 @@ static int cv1800_mbox_probe(struct platform_device *pdev)
+ 		return dev_err_probe(dev, PTR_ERR(mb->mbox_base),
+ 				     "Failed to map resource\n");
+ 
++	/*
++	 * Start from a clean receive state: stale enable/int bits survive
++	 * warm reboots (the block is not reset with the CPU) and would
++	 * either raise a phantom interrupt or wedge a sender's tx-done
++	 * poll.
++	 */
++	writeb(0, mb->mbox_base + MBOX_EN_REG(RECV_CPU));
++	writeb(0xff, mb->mbox_base + MBOX_SET_CLR_REG(RECV_CPU));
++
+ 	mb->mbox.dev = dev;
+ 	mb->mbox.chans = mb->chans;
+ 	mb->mbox.txdone_poll = true;
+-- 
+2.34.1
+

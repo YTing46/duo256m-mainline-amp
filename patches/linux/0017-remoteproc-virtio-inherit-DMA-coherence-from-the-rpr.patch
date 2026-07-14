@@ -1,0 +1,49 @@
+From 8877235be1b24e44719e9e229c81f25db5471583 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 14 Jul 2026 21:28:42 +0800
+Subject: [PATCH 17/17] remoteproc: virtio: inherit DMA coherence from the
+ rproc parent
+
+rproc_virtio_probe() copies the parent's dma_range_map, dma_ops and
+DMA mask to the auto-created vdev platform device, but not its
+dma_coherent flag. The device therefore keeps the arch-wide default,
+and on a dma-noncoherent remoteproc every dma_sync_*() on
+vdev-allocated ring/buffer memory is silently a no-op: the host's
+writes linger in its cache and the remote core reads stale data.
+
+Observed on SG2002 (dual C906 AMP): virtio-rpmsg messages arrive at
+the remote as all-zeroes while the cached view on the host looks
+correct.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ drivers/remoteproc/remoteproc_virtio.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/drivers/remoteproc/remoteproc_virtio.c b/drivers/remoteproc/remoteproc_virtio.c
+index d5e9ff045a28..daa96462613d 100644
+--- a/drivers/remoteproc/remoteproc_virtio.c
++++ b/drivers/remoteproc/remoteproc_virtio.c
+@@ -518,6 +518,19 @@ static int rproc_virtio_probe(struct platform_device *pdev)
+ 	/* Make device dma capable by inheriting from parent's capabilities */
+ 	set_dma_ops(dev, get_dma_ops(rproc->dev.parent));
+ 
++#if defined(CONFIG_ARCH_HAS_SYNC_DMA_FOR_DEVICE) || \
++    defined(CONFIG_ARCH_HAS_SYNC_DMA_FOR_CPU) || \
++    defined(CONFIG_ARCH_HAS_SYNC_DMA_FOR_CPU_ALL)
++	/*
++	 * Also inherit the parent's DMA coherence: this auto-created
++	 * platform device has no OF node, so it keeps the arch-wide default,
++	 * and on a dma-noncoherent rproc that silently turns every
++	 * dma_sync_*() on vdev-allocated ring/buffer memory into a no-op --
++	 * the remote core then reads stale cache-shadowed data.
++	 */
++	dev->dma_coherent = rproc->dev.parent->dma_coherent;
++#endif
++
+ 	ret = dma_coerce_mask_and_coherent(dev, dma_get_mask(rproc->dev.parent));
+ 	if (ret) {
+ 		dev_warn(dev, "Failed to set DMA mask %llx. Trying to continue... (%pe)\n",
+-- 
+2.34.1
+

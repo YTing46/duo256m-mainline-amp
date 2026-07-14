@@ -1,7 +1,7 @@
 From ff51694fa1cae16427ee2ffb3080de48c6dc314a Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 7 Jul 2026 22:03:16 +0800
-Subject: [PATCH 3/3] comm: echo variable-length payloads up to 496B for
+Subject: [PATCH 3/5] comm: echo variable-length payloads up to 496B for
  payload sweep
 
 read_cb previously dropped anything larger than the 24B stamped

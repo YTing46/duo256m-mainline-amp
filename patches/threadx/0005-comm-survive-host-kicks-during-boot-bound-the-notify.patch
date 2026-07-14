@@ -1,0 +1,148 @@
+From bde771cbe464619a00a2f101cfd56ac5fa022680 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 14 Jul 2026 21:28:34 +0800
+Subject: [PATCH 5/5] comm: survive host kicks during boot; bound the notify
+ tx-done spin
+
+The mainline host kicks the mailbox within milliseconds of releasing
+the C906L reset (virtio-rpmsg probe at remoteproc start), which the
+vendor-era code never had to survive:
+
+- An interrupt taken before the ThreadX scheduler runs (the PLIC
+  enable survives stop/start from the previous instance, and the port
+  enables mie.MEIE inside tx_kernel_enter) corrupts the port's context
+  handling before the first thread exists. PLIC-disable the mailbox
+  line and quiesce it first thing in main; move quiesce + request_irq
+  into the mail thread so the first interrupt is taken in thread
+  context.
+- platform_notify's wait for the host to consume the previous kick is
+  now bounded: the enable bit can stay set when the host is down, and
+  coalesced kicks are safe (the host pokes every virtqueue on any
+  mailbox interrupt).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ cvitek/driver/rpmsg/src/rpmsg_platform.c | 14 ++++++--
+ cvitek/task/comm/src/riscv64/comm_main.c | 43 ++++++++++++++++++------
+ 2 files changed, 44 insertions(+), 13 deletions(-)
+
+diff --git a/cvitek/driver/rpmsg/src/rpmsg_platform.c b/cvitek/driver/rpmsg/src/rpmsg_platform.c
+index af16ae4..8e7a328 100644
+--- a/cvitek/driver/rpmsg/src/rpmsg_platform.c
++++ b/cvitek/driver/rpmsg/src/rpmsg_platform.c
+@@ -87,10 +87,20 @@ void platform_notify(uint32_t vector_id)
+     unsigned long msg = ((unsigned long)((vector_id & 0x1) + 128) << 8)
+                       | (1UL << 24);
+ 
++    int spin = 100000;
++
+     env_lock_mutex(platform_lock);
+ 
+-    /* wait for the host to consume the previous kick on this slot */
+-    while (mbox->cpu_mbox_en[SEND_TO_CPU1].mbox_info & (1U << RPMSG_KICK_SLOT))
++    /*
++     * Wait for the host to consume the previous kick on this slot, but
++     * BOUNDED: the enable bit can be left polluted by the host (its ISR
++     * rewrites the whole enable register) or the host may simply be
++     * down. Kicks may then coalesce -- safe, the host pokes every
++     * virtqueue on any mailbox interrupt. An unbounded spin here
++     * deadlocks the whole firmware at NS-announce time.
++     */
++    while ((mbox->cpu_mbox_en[SEND_TO_CPU1].mbox_info & (1U << RPMSG_KICK_SLOT))
++           && --spin)
+         ;
+ 
+     ctx[RPMSG_KICK_SLOT] = msg;
+diff --git a/cvitek/task/comm/src/riscv64/comm_main.c b/cvitek/task/comm/src/riscv64/comm_main.c
+index 20f6644..7e92194 100755
+--- a/cvitek/task/comm/src/riscv64/comm_main.c
++++ b/cvitek/task/comm/src/riscv64/comm_main.c
+@@ -30,6 +30,7 @@
+ #endif
+ 
+ void prvQueueISR(void);
++void disable_irq(unsigned int irqn);
+ /* mailbox parameters */
+ volatile struct mailbox_set_register *mbox_reg;
+ volatile struct mailbox_done_register *mbox_done_reg;
+@@ -41,16 +42,16 @@ void main_cvirtos(void)
+ 	printf("create cvi task\n");
+ 
+ 	/*
+-	 * Quiesce the mailbox BEFORE unmasking its IRQ. The mailbox interrupt
+-	 * toward the C906L is effectively edge-latched: if a host kick is
+-	 * already pending here (its line already high -- e.g. Linux kicked
+-	 * between remoteproc stop and start), our IRQ init clears the latched
+-	 * pending while the line stays high, so no new edge ever arrives and
+-	 * mailbox RX is dead for the whole boot (boot-lottery deafness).
+-	 * Clear the int latch and the context slots so the line is LOW now;
+-	 * the first real kick after this makes a fresh edge. Stale kicks
+-	 * dropped here are only pre-boot leftovers the host has given up on.
++	 * Make sure the mailbox CANNOT interrupt before the scheduler runs:
++	 * the mainline host kicks us within milliseconds of releasing our
++	 * reset (virtio-rpmsg probe), and the PLIC enable for the mailbox
++	 * IRQ survives a remoteproc stop/start (set by the previous firmware
++	 * instance). An interrupt taken the moment the ThreadX port enables
++	 * mie.MEIE -- before any thread exists -- wrecks the scheduler.
++	 * So: PLIC-disable the line AND drop it (quiesce) here; the mail
++	 * thread re-quiesces and request_irq()s in proper thread context.
+ 	 */
++	disable_irq(MBOX_INT_C906_2ND);
+ 	{
+ 		volatile struct mailbox_set_register *mr =
+ 			(struct mailbox_set_register *)MAILBOX_REG_BASE;
+@@ -63,8 +64,6 @@ void main_cvirtos(void)
+ 			ctx[i] = 0;
+ 	}
+ 
+-	/* Start the tasks and timer running. */ // cvitek/driver/common/src/system.c
+-	request_irq(MBOX_INT_C906_2ND, prvQueueISR, 0, "mailbox", (void *)0);
+ 
+ 	/* Enter the ThreadX kernel.  */
+ 	tx_kernel_enter();
+@@ -277,6 +276,7 @@ static THE_MESSAGE volatile led_msg = {0};
+ /* Internal functions */
+ static int32_t rpmsg_ept_read_cb(void *payload, uint32_t payload_len, uint32_t src, void *priv)
+ {
++    
+     volatile int32_t *has_received = priv;
+     if (payload_len <= sizeof(g_rx.raw))
+     {
+@@ -333,6 +333,7 @@ void thread_rpmsg_entry(ULONG thread_input)
+             g_rx.msg.magic = RTT_STAMP_MAGIC;
+             g_rx.msg.s1_ticks = g_isr_ticks;
+             g_rx.msg.s3_ticks = rdtime_ticks();
++            
+             (void)rpmsg_lite_send(gp_rpmsg_dev_inst, gp_rpmsg_ept, g_remote_addr, (char *)g_rx.raw, echo_len,
+                                   RL_DONT_BLOCK);
+         }
+@@ -364,6 +365,26 @@ void prvCmdQuRunTask(ULONG thread_input)
+ 	mailbox_context = (unsigned long *)(MAILBOX_REG_BUFF);
+ 
+ 	cvi_spinlock_init();
++
++	/*
++	 * Quiesce the mailbox BEFORE unmasking its IRQ (Bug #3: the int is
++	 * edge-latched; clearing pending while the line is high leaves RX
++	 * deaf), and do BOTH only now, in thread context: the host kicks us
++	 * during our early boot, and an interrupt taken before the scheduler
++	 * runs corrupts the ThreadX port's context handling. Stale kicks
++	 * dropped here are re-sent by the host mailbox framework as soon as
++	 * clearing our enable bits reads back as tx-done.
++	 */
++	{
++		int i;
++
++		mbox_reg->cpu_mbox_set[RECEIVE_CPU].cpu_mbox_int_clr.mbox_int_clr = 0xFF;
++		mbox_reg->cpu_mbox_en[RECEIVE_CPU].mbox_info = 0;
++		for (i = 0; i < MAILBOX_MAX_NUM; i++)
++			mailbox_context[i] = 0;
++	}
++	request_irq(MBOX_INT_C906_2ND, prvQueueISR, 0, "mailbox", (void *)0);
++
+ 	printf("prvCmdQuRunTask run\n");
+ 
+ 	for (;;) {
+-- 
+2.34.1
+

@@ -1,0 +1,192 @@
+From 638ac2b8aea9f81b061f3a2f9ce1ec909f6c34d8 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 14 Jul 2026 20:22:19 +0800
+Subject: [PATCH 14/17] remoteproc: cv1800b: add mailbox kicks for virtio vdev
+ support
+
+Wire the C906L rproc to the cv1800 mailbox so the remoteproc core can
+serve the vdev in the firmware's resource table: .kick sends the
+vendor cmdqu-formatted 8-byte message (cmd_id = vq index, linux_valid
+set) on per-vq channels toward the C906L, and the rx channel callback
+pokes every virtqueue since back-to-back kicks share one mailbox slot
+and the payload may be overwritten by the time it is read.
+
+Channels are optional: without an mboxes property the driver behaves
+as before (lifecycle-only, standalone firmware).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ drivers/remoteproc/sophgo_cv1800b_c906l.c | 113 ++++++++++++++++++++++
+ 1 file changed, 113 insertions(+)
+
+diff --git a/drivers/remoteproc/sophgo_cv1800b_c906l.c b/drivers/remoteproc/sophgo_cv1800b_c906l.c
+index c589959ce09e..c643148193fe 100644
+--- a/drivers/remoteproc/sophgo_cv1800b_c906l.c
++++ b/drivers/remoteproc/sophgo_cv1800b_c906l.c
+@@ -4,6 +4,8 @@
+  */
+ 
+ #include <linux/bits.h>
++#include <linux/interrupt.h>
++#include <linux/mailbox_client.h>
+ #include <linux/mfd/syscon.h>
+ #include <linux/module.h>
+ #include <linux/of_device.h>
+@@ -20,18 +22,37 @@
+ 
+ #define CV1800B_SYS_C906L_BOOTADDR_REG	0x20
+ 
++#define CV1800B_C906L_NUM_VQS		2
++
++/*
++ * Kick payload: the 8-byte mailbox message the firmware's cmdqu dispatcher
++ * expects (little-endian): byte 0 ip_id, byte 1 cmd_id (= vq index), byte 2
++ * linux_valid, byte 3 rtos_valid, bytes 4-7 param. Anything without
++ * linux_valid set is dropped by the firmware ISR.
++ */
++#define CV1800B_C906L_KICK_MSG(vqid)	(((u64)(vqid) << 8) | (1ULL << 16))
++
+ /**
+  * struct cv1800b_c906l - C906L remoteproc structure
+  * @dev: private pointer to the device
+  * @reset: reset control handle
+  * @rproc: the remote processor handle
+  * @syscon: regmap for accessing security system registers
++ * @client: mailbox client (kicks in both directions)
++ * @tx_ch: per-virtqueue kick channels toward the C906L
++ * @rx_ch: channel the firmware kicks us back on
++ * @kick_msg: persistent kick payloads (the mailbox framework queues the
++ *            message pointer, so it must outlive the mbox_send_message call)
+  */
+ struct cv1800b_c906l {
+ 	struct device *dev;
+ 	struct reset_control *reset;
+ 	struct rproc *rproc;
+ 	struct regmap *syscon;
++	struct mbox_client client;
++	struct mbox_chan *tx_ch[CV1800B_C906L_NUM_VQS];
++	struct mbox_chan *rx_ch;
++	u64 kick_msg[CV1800B_C906L_NUM_VQS];
+ };
+ 
+ static int cv1800b_c906l_mem_alloc(struct rproc *rproc,
+@@ -156,10 +177,41 @@ static int cv1800b_c906l_parse_fw(struct rproc *rproc,
+ 	return ret;
+ }
+ 
++static void cv1800b_c906l_kick(struct rproc *rproc, int vqid)
++{
++	struct cv1800b_c906l *priv = rproc->priv;
++	int ret;
++
++	if (vqid < 0 || vqid >= CV1800B_C906L_NUM_VQS || !priv->tx_ch[vqid])
++		return;
++
++	ret = mbox_send_message(priv->tx_ch[vqid], &priv->kick_msg[vqid]);
++	if (ret < 0)
++		dev_err(priv->dev, "kick vq%d failed: %d\n", vqid, ret);
++}
++
++static void cv1800b_c906l_mbox_rx(struct mbox_client *cl, void *data)
++{
++	struct cv1800b_c906l *priv =
++		container_of(cl, struct cv1800b_c906l, client);
++	int i;
++
++	/*
++	 * Back-to-back kicks from the firmware share one mailbox slot, so
++	 * the payload may already be overwritten by the time we read it.
++	 * Don't trust it: poke every virtqueue, virtio re-checks the used
++	 * rings and spurious interrupts are harmless, while a lost kick
++	 * deadlocks rpmsg.
++	 */
++	for (i = 0; i < CV1800B_C906L_NUM_VQS; i++)
++		rproc_vq_interrupt(priv->rproc, i);
++}
++
+ static const struct rproc_ops cv1800b_c906l_ops = {
+ 	.prepare = cv1800b_c906l_prepare,
+ 	.start = cv1800b_c906l_start,
+ 	.stop = cv1800b_c906l_stop,
++	.kick = cv1800b_c906l_kick,
+ 	.load = rproc_elf_load_segments,
+ 	.parse_fw = cv1800b_c906l_parse_fw,
+ 	.find_loaded_rsc_table = rproc_elf_find_loaded_rsc_table,
+@@ -167,6 +219,63 @@ static const struct rproc_ops cv1800b_c906l_ops = {
+ 	.get_boot_addr = rproc_elf_get_boot_addr,
+ };
+ 
++static void cv1800b_c906l_free_mboxes(void *data)
++{
++	struct cv1800b_c906l *priv = data;
++	int i;
++
++	for (i = 0; i < CV1800B_C906L_NUM_VQS; i++)
++		if (priv->tx_ch[i])
++			mbox_free_channel(priv->tx_ch[i]);
++	if (priv->rx_ch)
++		mbox_free_channel(priv->rx_ch);
++}
++
++/*
++ * Mailbox channels are optional: without them the driver still manages the
++ * core's lifecycle (standalone firmware), it just cannot serve virtio
++ * devices from the resource table.
++ */
++static int cv1800b_c906l_request_mboxes(struct cv1800b_c906l *priv)
++{
++	static const char * const tx_names[CV1800B_C906L_NUM_VQS] = {
++		"vq0", "vq1"
++	};
++	struct mbox_chan *chan;
++	int i;
++
++	priv->client.dev = priv->dev;
++	priv->client.tx_block = false;
++	priv->client.rx_callback = cv1800b_c906l_mbox_rx;
++
++	for (i = 0; i < CV1800B_C906L_NUM_VQS; i++) {
++		priv->kick_msg[i] = CV1800B_C906L_KICK_MSG(i);
++		chan = mbox_request_channel_byname(&priv->client, tx_names[i]);
++		if (IS_ERR(chan))
++			goto err;
++		priv->tx_ch[i] = chan;
++	}
++
++	chan = mbox_request_channel_byname(&priv->client, "rx");
++	if (IS_ERR(chan))
++		goto err;
++	priv->rx_ch = chan;
++
++	return devm_add_action_or_reset(priv->dev, cv1800b_c906l_free_mboxes,
++					priv);
++
++err:
++	cv1800b_c906l_free_mboxes(priv);
++	priv->tx_ch[0] = priv->tx_ch[1] = NULL;
++	priv->rx_ch = NULL;
++
++	if (PTR_ERR(chan) == -EPROBE_DEFER)
++		return -EPROBE_DEFER;
++
++	dev_info(priv->dev, "no mailbox (%pe), virtio kicks disabled\n", chan);
++	return 0;
++}
++
+ static int cv1800b_c906l_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -201,6 +310,10 @@ static int cv1800b_c906l_probe(struct platform_device *pdev)
+ 		return dev_err_probe(dev, PTR_ERR(priv->reset),
+ 				     "failed to get reset control handle\n");
+ 
++	ret = cv1800b_c906l_request_mboxes(priv);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to get mailboxes\n");
++
+ 	platform_set_drvdata(pdev, rproc);
+ 
+ 	ret = devm_rproc_add(dev, rproc);
+-- 
+2.34.1
+

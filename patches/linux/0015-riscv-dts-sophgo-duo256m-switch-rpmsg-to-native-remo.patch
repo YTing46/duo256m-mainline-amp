@@ -1,0 +1,126 @@
+From d5e126afea8b156a438c412c2181cfb496d0d5bc Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 14 Jul 2026 20:22:19 +0800
+Subject: [PATCH 15/17] riscv: dts: sophgo: duo256m: switch rpmsg to native
+ remoteproc vdev
+
+Add the cv1800b mailbox node (first in-tree user) and point the rproc
+node at it (vq0/vq1 kick channels toward the C906L, slot 7 back).
+Name the vring reserved-memory nodes vdev0vring0/1 so the core maps
+the fixed-da vrings from the firmware's resource table, and mark the
+rproc dma-noncoherent so the virtio-rpmsg buffer pool is not allocated
+cacheable (Bug #2 lesson). Drop the out-of-tree cvitek rpmsg/rtos_cmdqu
+glue nodes - virtio_rpmsg_bus now rides the remoteproc vdev.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../boot/dts/sophgo/sg2002-milkv-duo256m.dts  | 71 +++++++++----------
+ 1 file changed, 35 insertions(+), 36 deletions(-)
+
+diff --git a/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts b/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
+index bacf88f6b874..160556f703ea 100644
+--- a/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts
+@@ -28,9 +28,20 @@ reserved-memory {
+ 		#size-cells = <1>;
+ 		ranges;
+ 
+-		virtqueue0desc@8fc00000 {
++		/*
++		 * Node names matter: the remoteproc core matches carveouts
++		 * named vdev0vring0/1 against the fixed-da vrings in the
++		 * firmware's resource table (same addresses rpmsg-lite on the
++		 * C906L is hardwired to).
++		 */
++		vdev0vring0: vdev0vring0@8fc00000 {
++			no-map;
++			reg = <0x8fc00000 0x8000>;
++		};
++
++		vdev0vring1: vdev0vring1@8fc08000 {
+ 			no-map;
+-			reg = <0x8fc00000 0x10000>;
++			reg = <0x8fc08000 0x8000>;
+ 		};
+ 
+ 		rtos_reserved: rtos@8fe00000 {
+@@ -39,26 +50,15 @@ rtos_reserved: rtos@8fe00000 {
+ 		};
+ 	};
+ 
+-	rpmsg {
+-		compatible = "cvitek,rpmsg";
+-		vdev-nums = <1>;
+-		reg = <0x8fc00000 0x10000>;
+-		reg-names = "desc_region";
+-		/*
+-		 * SG2002 is not DMA-coherent, but this node sits at the root
+-		 * (not under /soc), so it does NOT inherit the soc node's
+-		 * dma-noncoherent. Without this, the virtio-rpmsg buffers from
+-		 * dma_alloc_coherent() are plain cacheable memory: the C906B's
+-		 * writes (message header+payload) linger in its D-cache and
+-		 * reach DRAM only on random eviction, so the cache-less C906L
+-		 * reads stale buffer contents -- rpmsg pingpong stalls after a
+-		 * message or two (Bug #2).
+-		 */
+-		dma-noncoherent;
+-		status = "okay";
+-	};
+-
+ 	soc {
++		mailbox: mailbox@1900000 {
++			compatible = "sophgo,cv1800b-mailbox";
++			reg = <0x01900000 0x1000>;
++			interrupt-parent = <&plic>;
++			interrupts = <SOC_PERIPHERAL_IRQ(85) IRQ_TYPE_LEVEL_HIGH>;
++			#mbox-cells = <2>;
++		};
++
+ 		/*
+ 		 * SEC_SYS block: C906L enable (0x04 bit13) and boot address
+ 		 * (0x20/0x24), same registers the vendor FSBL pokes to start
+@@ -81,27 +81,26 @@ sec_sys: syscon@20b0000 {
+ 
+ 	/*
+ 	 * Upstream C906L remoteproc (Junhui Liu's v2 series + local fixes)
+-	 * in standalone mode: loads cvirtos.elf into the rtos carveout and
+-	 * boots it via SEC_SYS + RST_CPUSYS2. RPMsg still rides the
+-	 * out-of-tree cvitek glue below until the virtio/mailbox path is
+-	 * migrated.
++	 * with native virtio-rpmsg: the firmware carries a resource table
++	 * (vdev + 2 vrings at fixed da inside vring_reserved), kicks ride
++	 * the cv1800 mailbox (channels 0/1 to the C906L for vq0/vq1, the
++	 * firmware answers on channel 7 toward the C906B).
++	 *
++	 * dma-noncoherent is required here for the same reason as the old
++	 * cvitek glue node (Bug #2): this node is at the root, not under
++	 * /soc, so the vdev's virtio-rpmsg buffer pool would otherwise be
++	 * allocated as plain cacheable memory that the cache-less C906L
++	 * reads stale.
+ 	 */
+ 	rproc {
+ 		compatible = "sophgo,sg2002-c906l", "sophgo,cv1800b-c906l";
+ 		firmware-name = "cvirtos.elf";
+-		memory-region = <&rtos_reserved>;
++		memory-region = <&rtos_reserved>, <&vdev0vring0>, <&vdev0vring1>;
+ 		resets = <&rst RST_CPUSYS2>;
+ 		sophgo,syscon = <&sec_sys>;
+-	};
+-
+-	rtos_cmdqu {
+-		compatible = "cvitek,rtos_cmdqu";
+-		reg = <0x01900000 0x1000>;
+-		reg-names = "mailbox";
+-		interrupt-parent = <&plic>;
+-		interrupts = <SOC_PERIPHERAL_IRQ(85) IRQ_TYPE_LEVEL_HIGH>;
+-		interrupt-names = "mailbox";
+-		status = "okay";
++		mboxes = <&mailbox 0 2>, <&mailbox 1 2>, <&mailbox 7 1>;
++		mbox-names = "vq0", "vq1", "rx";
++		dma-noncoherent;
+ 	};
+ };
+ 
+-- 
+2.34.1
+
