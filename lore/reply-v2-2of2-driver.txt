@@ -1,0 +1,121 @@
+To: Junhui Liu <junhui.liu@pigmoral.tech>
+Cc: Bjorn Andersson <andersson@kernel.org>,
+    Mathieu Poirier <mathieu.poirier@linaro.org>,
+    Rob Herring <robh@kernel.org>,
+    Krzysztof Kozlowski <krzk+dt@kernel.org>,
+    Conor Dooley <conor+dt@kernel.org>,
+    Chen Wang <unicorn_wang@outlook.com>,
+    Inochi Amaoto <inochiama@gmail.com>,
+    Philipp Zabel <p.zabel@pengutronix.de>,
+    linux-remoteproc@vger.kernel.org,
+    devicetree@vger.kernel.org,
+    sophgo@lists.linux.dev,
+    linux-riscv@lists.infradead.org,
+    linux-kernel@vger.kernel.org
+Subject: Re: [PATCH v2 2/2] drivers: remoteproc: Add C906L controller for Sophgo CV1800B SoC
+In-Reply-To: <20250728-cv1800-rproc-v2-2-5bbee4abe9dc@pigmoral.tech>
+
+Hi Junhui,
+
+I have been running this series on the SG2002 (Milk-V Duo 256M, which
+shares the CV1800B's C906L subsystem) on top of v7.0-rc6, driving a
+ThreadX firmware. Load, start, stop and restart via sysfs all work,
+and the firmware's timestamps confirm the core is genuinely restarted
+by the driver (the vendor FSBL also boots the C906L at power-on, so
+"the firmware is running" alone is not sufficient evidence that the
+driver did anything).
+
+I hope this series can move forward - some findings from real-hardware
+testing below, including one SoC-level issue that wedges the whole
+chip and needs a small addition to the binding.
+
+1) Double rproc_del() on unbind
+
+> +	ret = devm_rproc_add(dev, rproc);
+[...]
+> +static void cv1800b_c906l_remove(struct platform_device *pdev)
+> +{
+> +	struct rproc *rproc = platform_get_drvdata(pdev);
+> +
+> +	rproc_del(rproc);
+> +}
+
+devm_rproc_add() already registers a devres action that calls
+rproc_del() on driver detach, so the explicit rproc_del() in .remove
+makes it run twice. Either drop the .remove callback entirely (and
+rely on devm), or use plain rproc_add() with the manual cleanup.
+
+2) Sparse __iomem casts (already flagged by the test robot)
+
+> +	mem->va = (void *)va;
+[...]
+> +	iounmap((void __iomem *)mem->va);
+
+These need __force to be sparse-clean:
+
+	mem->va = (__force void *)va;
+	iounmap((__force void __iomem *)mem->va);
+
+3) SEC_SYS register access hangs the whole SoC once
+   clk_disable_unused() has run (needs a clocks dependency)
+
+This one cost me a while to root-cause, because the failure looks
+completely unrelated: the first sysfs "start" after boot froze all
+block I/O on the SoC (MMC included), so the board appeared to die of
+filesystem hangs with the rproc driver merely being the last thing
+that ran.
+
+The actual mechanism: bus access to the SEC_SYS block (0x020b0000,
+where C906L_CTRL/BOOTADDR live) requires clk_efuse (CLK_EN_0 bit 11,
+CLK_EFUSE in sophgo,cv1800.h). Nothing in mainline claims that clock,
+so clk_disable_unused() gates it at late_initcall. Any subsequent
+load/store to the block - from this driver's syscon regmap, or even a
+single devmem read from userspace - stalls the AXI interconnect and
+takes the rest of the SoC down with it. There is no bus error, just a
+wedge.
+
+Minimal reproducer on an otherwise working mainline kernel (no rproc
+driver involved at all):
+
+	# devmem 0x020b0004
+	(board wedges: MMC dies, all rootfs I/O freezes)
+
+The vendor kernel encodes this dependency in C instead of DT: its
+crypto driver wraps every access to 0x020b0000 in
+clk_prepare_enable(clk_efuse)/clk_disable_unprepare() (see
+cvitek-spacc.c in the vendor tree), which is presumably why this was
+never visible there.
+
+The fix I tested is to declare the clock on the syscon node so the
+syscon core attaches it to the regmap and regmap-mmio enables it
+around each access:
+
+	sec_sys: syscon@20b0000 {
+		compatible = "sophgo,sg2002-sec-sys", "syscon";
+		reg = <0x020b0000 0x1000>;
+		clocks = <&clk CLK_EFUSE>;
+	};
+
+With that in place (and no clk_ignore_unused on the command line),
+start/stop/start all succeed with the gate observably closed when
+idle, i.e. the clock is enabled just-in-time per access. Alternatively
+the rproc node/driver could take the clock explicitly for the lifetime
+of the started core; either way I think the binding should require it,
+otherwise every user of this driver on a defconfig kernel will hit the
+wedge on their first post-boot start.
+
+4) SG2002 works with a fallback compatible
+
+For the SG2000/SG2002 the same driver works unmodified; I used
+
+	compatible = "sophgo,sg2002-c906l", "sophgo,cv1800b-c906l";
+
+Happy to send the sg2002 dts/binding additions as a follow-up once v3
+lands, and for the series with the above addressed:
+
+Tested-by: FULL-NAME <q36141367@gs.ncku.edu.tw>
+# on SG2002 Milk-V Duo 256M: ELF load, start/stop/restart via sysfs,
+# ThreadX firmware + rpmsg payload traffic
+
+Best regards,
+FULL-NAME

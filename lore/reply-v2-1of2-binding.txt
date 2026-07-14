@@ -1,0 +1,45 @@
+To: Junhui Liu <junhui.liu@pigmoral.tech>
+Cc: Bjorn Andersson <andersson@kernel.org>,
+    Mathieu Poirier <mathieu.poirier@linaro.org>,
+    Rob Herring <robh@kernel.org>,
+    Krzysztof Kozlowski <krzk+dt@kernel.org>,
+    Conor Dooley <conor+dt@kernel.org>,
+    Chen Wang <unicorn_wang@outlook.com>,
+    Inochi Amaoto <inochiama@gmail.com>,
+    Philipp Zabel <p.zabel@pengutronix.de>,
+    linux-remoteproc@vger.kernel.org,
+    devicetree@vger.kernel.org,
+    sophgo@lists.linux.dev,
+    linux-riscv@lists.infradead.org,
+    linux-kernel@vger.kernel.org
+Subject: Re: [PATCH v2 1/2] dt-bindings: remoteproc: Add C906L rproc for Sophgo CV1800B SoC
+In-Reply-To: <20250728-cv1800-rproc-v2-1-5bbee4abe9dc@pigmoral.tech>
+
+Hi Junhui,
+
+Two suggestions from testing this on SG2002 hardware (details in my
+reply to patch 2/2):
+
+1) The SG2000/SG2002 C906L subsystem is compatible with the CV1800B
+   one - the driver works unmodified. Could v3 allow a
+   per-SoC compatible with the cv1800b fallback, e.g.:
+
+	compatible:
+	  oneOf:
+	    - const: sophgo,cv1800b-c906l
+	    - items:
+	        - enum:
+	            - sophgo,sg2000-c906l
+	            - sophgo,sg2002-c906l
+	        - const: sophgo,cv1800b-c906l
+
+2) The register block behind the sophgo,syscon phandle (SEC_SYS at
+   0x020b0000) is only accessible while clk_efuse (CLK_EFUSE) is
+   running. Mainline gates it via clk_disable_unused, after which any
+   access wedges the SoC's interconnect - see my reply to 2/2 for the
+   analysis and a devmem one-line reproducer. The syscon (or this
+   node) should have a required clocks entry so the dependency is
+   expressed in DT rather than relying on clk_ignore_unused.
+
+Best regards,
+FULL-NAME
