@@ -82,4 +82,4 @@ lzma -9 -k Image && mkimage -f board/boot.its boot.sd   # load addr 0x82000000
 - [HenryChaing — Linux 核心專題: 異質多核通訊機制](https://hackmd.io/@sysprog/linux2025-projects)（vendor 5.10 基線）
 - [Junhui Liu — remoteproc: Add C906L controller for Sophgo CV1800B SoC (v2)](https://lore.kernel.org/linux-remoteproc/)（upstream driver 素材）
 - [milkv-duo/duo-buildroot-sdk-v2 v2.0.1](https://github.com/milkv-duo/duo-buildroot-sdk-v2/releases/tag/v2.0.1)（vendor 參考基線：FSBL、5.10 驅動對照）
-- NCKU jserv Linux 核心設計課程
+- [NCKU jserv Linux 核心設計課程](https://wiki.csie.ncku.edu.tw/linux/schedule)
