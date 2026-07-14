@@ -1,0 +1,96 @@
+From d9cbe40e9e43ac805cf176e64702687a42cee81c Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Wed, 15 Jul 2026 00:21:52 +0800
+Subject: [PATCH 22/23] rpmsg: probe the wake path for RTT decomposition
+
+Extend /proc/rpmsg_rtt with three wake sub-stamps: recv_done entry
+(virtio_rpmsg_bus), skb queued + reader woken (rpmsg_char rx cb) and
+reader resumed (rpmsg_char read). Splits the wake segment into
+vq-dispatch / deliver / scheduler / syscall-return.
+---
+ drivers/remoteproc/sophgo_cv1800b_c906l.c | 8 ++++++--
+ drivers/rpmsg/rpmsg_char.c                | 8 ++++++++
+ drivers/rpmsg/virtio_rpmsg_bus.c          | 6 ++++++
+ 3 files changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/remoteproc/sophgo_cv1800b_c906l.c b/drivers/remoteproc/sophgo_cv1800b_c906l.c
+index 5dffc6ba13fd..7a519582f1a1 100644
+--- a/drivers/remoteproc/sophgo_cv1800b_c906l.c
++++ b/drivers/remoteproc/sophgo_cv1800b_c906l.c
+@@ -191,14 +191,18 @@ static int cv1800b_c906l_parse_fw(struct rproc *rproc,
+  */
+ extern u64 cv1800_mbox_rtt_b2_ns;
+ extern u64 cv1800_mbox_rtt_b2_tick;
++extern u64 rpmsg_rtt_w1_ns;
++extern u64 rpmsg_rtt_w2_ns;
++extern u64 rpmsg_rtt_w3_ns;
+ static u64 rtt_b1_ns, rtt_b1_tick, rtt_b1d_ns, rtt_b2b_ns;
+ 
+ static int rpmsg_rtt_show(struct seq_file *m, void *v)
+ {
+-	seq_printf(m, "%llu %llu %llu %llu %llu %llu\n",
++	seq_printf(m, "%llu %llu %llu %llu %llu %llu %llu %llu %llu\n",
+ 		   rtt_b1_ns, rtt_b1_tick, rtt_b1d_ns,
+ 		   cv1800_mbox_rtt_b2_ns, cv1800_mbox_rtt_b2_tick,
+-		   rtt_b2b_ns);
++		   rtt_b2b_ns, rpmsg_rtt_w1_ns, rpmsg_rtt_w2_ns,
++		   rpmsg_rtt_w3_ns);
+ 	return 0;
+ }
+ 
+diff --git a/drivers/rpmsg/rpmsg_char.c b/drivers/rpmsg/rpmsg_char.c
+index ca9cf8858a5e..affc186a6595 100644
+--- a/drivers/rpmsg/rpmsg_char.c
++++ b/drivers/rpmsg/rpmsg_char.c
+@@ -29,6 +29,12 @@
+ #include "rpmsg_char.h"
+ #include "rpmsg_internal.h"
+ 
++/* RTT decomposition probes (see /proc/rpmsg_rtt) */
++u64 rpmsg_rtt_w2_ns;
++EXPORT_SYMBOL_GPL(rpmsg_rtt_w2_ns);
++u64 rpmsg_rtt_w3_ns;
++EXPORT_SYMBOL_GPL(rpmsg_rtt_w3_ns);
++
+ #define RPMSG_DEV_MAX	(MINORMASK + 1)
+ 
+ static dev_t rpmsg_major;
+@@ -116,6 +122,7 @@ static int rpmsg_ept_cb(struct rpmsg_device *rpdev, void *buf, int len,
+ 
+ 	/* wake up any blocking processes, waiting for new data */
+ 	wake_up_interruptible(&eptdev->readq);
++	rpmsg_rtt_w2_ns = ktime_get_ns();
+ 
+ 	return 0;
+ }
+@@ -229,6 +236,7 @@ static ssize_t rpmsg_eptdev_read_iter(struct kiocb *iocb, struct iov_iter *to)
+ 		if (!eptdev->ept)
+ 			return -EPIPE;
+ 
++		rpmsg_rtt_w3_ns = ktime_get_ns();
+ 		spin_lock_irqsave(&eptdev->queue_lock, flags);
+ 	}
+ 
+diff --git a/drivers/rpmsg/virtio_rpmsg_bus.c b/drivers/rpmsg/virtio_rpmsg_bus.c
+index 649bd41a45ac..110112999614 100644
+--- a/drivers/rpmsg/virtio_rpmsg_bus.c
++++ b/drivers/rpmsg/virtio_rpmsg_bus.c
+@@ -724,9 +724,15 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
+ }
+ 
+ /* called when an rx buffer is used, and it's time to digest a message */
++/* RTT decomposition probe (see /proc/rpmsg_rtt) */
++u64 rpmsg_rtt_w1_ns;
++EXPORT_SYMBOL_GPL(rpmsg_rtt_w1_ns);
++
+ static void rpmsg_recv_done(struct virtqueue *rvq)
+ {
+ 	struct virtproc_info *vrp = rvq->vdev->priv;
++
++	rpmsg_rtt_w1_ns = ktime_get_ns();
+ 	struct device *dev = &rvq->vdev->dev;
+ 	struct rpmsg_hdr *msg;
+ 	unsigned int len, msgs_received = 0;
+-- 
+2.34.1
+

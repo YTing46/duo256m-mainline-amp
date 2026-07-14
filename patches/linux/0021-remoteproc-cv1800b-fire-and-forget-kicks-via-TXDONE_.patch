@@ -1,7 +1,7 @@
 From 32257ff8eecd43812326fd47edbb9bf1ea43e9ef Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Wed, 15 Jul 2026 00:12:13 +0800
-Subject: [PATCH 21/21] remoteproc: cv1800b: fire-and-forget kicks via
+Subject: [PATCH 21/23] remoteproc: cv1800b: fire-and-forget kicks via
  TXDONE_BY_ACK
 
 Leaving tx-done to the mailbox framework's poll path arms its hrtimer,

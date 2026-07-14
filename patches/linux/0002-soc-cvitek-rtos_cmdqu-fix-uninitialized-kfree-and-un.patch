@@ -1,7 +1,7 @@
 From 366cbecfb7aa42481a7fa52b194c829d3e53519c Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Sun, 5 Jul 2026 21:54:30 +0800
-Subject: [PATCH 02/21] soc: cvitek: rtos_cmdqu: fix uninitialized kfree and
+Subject: [PATCH 02/23] soc: cvitek: rtos_cmdqu: fix uninitialized kfree and
  unchecked copy_from_user
 
 Correctness fixes in the ported dual-core command-queue driver:

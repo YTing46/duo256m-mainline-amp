@@ -1,7 +1,7 @@
 From d5e126afea8b156a438c412c2181cfb496d0d5bc Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 14 Jul 2026 20:22:19 +0800
-Subject: [PATCH 15/21] riscv: dts: sophgo: duo256m: switch rpmsg to native
+Subject: [PATCH 15/23] riscv: dts: sophgo: duo256m: switch rpmsg to native
  remoteproc vdev
 
 Add the cv1800b mailbox node (first in-tree user) and point the rproc

@@ -34,7 +34,7 @@
 | 小核生命週期 | vendor rproc driver | `sophgo_cv1800b_c906l.c`（upstream 候選 + `.kick`） |
 | 小核韌體 | FreeRTOS | ThreadX + rpmsg-lite + resource table |
 
-kernel patch 系列（v7.0-rc6 起 21 個 patch，可完整重現）與韌體修改（5 個 patch）
+kernel patch 系列（v7.0-rc6 起 23 個 patch，可完整重現）與韌體修改（5 個 patch）
 都在 [GitHub repo](https://github.com/YTing46/duo256m-mainline-amp) 的 `patches/`。
 
 ## 量化結果
@@ -45,7 +45,7 @@ kernel patch 系列（v7.0-rc6 起 21 個 patch，可完整重現）與韌體修
 |---|---|---|---|
 | vendor 5.10（Henry 基線） | 114.0 µs | 131.8 µs | +17.9 µs |
 | mainline 7.0 + 優化（cached buffers、RT kthread） | 152.0 µs | 162.1 µs | **+10.1 µs** |
-| mainline 7.0 全 upstream 架構（修掉 hrtimer 風暴後） | 164.0 µs | 174.8 µs（480B） | +10.9 µs |
+| mainline 7.0 全 upstream 架構（hrtimer 風暴修正 + hard-IRQ 直送） | **127.6 µs** | 139.2 µs（480B） | +11.6 µs |
 
 觀察：
 
@@ -53,9 +53,10 @@ kernel patch 系列（v7.0-rc6 起 21 個 patch，可完整重現）與韌體修
   （wake 段 ~62.7µs，近乎純常數）；
 - **大 payload 斜率反超 vendor**（+10.1 vs +17.9 µs）——把 virtio buffer pool
   從 uncached 改成 cached + 顯式 streaming DMA sync 的效果；
-- 全 upstream 架構相對 glue 多 12µs（8%）——decomp 逐段歸屬：vdev 分發間接層
-  +8.6、韌體固定 slot 檢查 +3.3、mailbox framework 層疊 +2.0，
-  是「標準框架 vs 手工 glue」的架構稅，每一微秒有主。
+- **全 upstream 架構最終反超手工 glue 24.4µs**：decomp 定位出兩個可修的
+  框架成本（poll hrtimer 風暴、8-byte 訊息不值得的 threaded handler），
+  修正後 127.6µs，距 vendor 只剩 13.6µs，剩餘每段有名有姓
+  （使用者喚醒 28.6、deliver 22.8、transport 26.9、sysin 20.4）。
 
 ### 穩定性
 
@@ -117,7 +118,9 @@ vdev 配置的 ring/buffer 記憶體所有 `dma_sync_*()` **靜默變成 no-op**
 context 連環觸發**直到對端清 enable bit，單核的 C906B 整顆被偷走。
 修法：kick 本來就冪等（兩端都 poke 全部 virtqueue），改用
 `knows_txdone`（TXDONE_BY_ACK）fire-and-forget——hrtimer 不再啟動，
-RTT 176→164µs、p99 301→220µs。
+RTT 176→164µs、p99 301→220µs。wake 細拆進一步顯示 mailbox 的
+threaded handler 為 8-byte 訊息多付一整個 scheduler hop（27.8µs），
+改 hard-IRQ 直送後 **RTT 127.6µs、p99 178µs——反超手工 glue 24µs**。
 
 ## 移植過程修掉的三個通訊 bug（摘要）
 
@@ -166,14 +169,13 @@ RTT 176→164µs、p99 301→220µs。
 |---|---|---|
 | kernel | vendor SDK | mainline + 19 patches（可重現） |
 | RPMsg 堆疊 | vendor glue | 100% upstream 架構 |
-| RTT 4B p50 | 114 µs | 152 µs（glue 優化版）/ 164 µs（全 upstream） |
+| RTT 4B p50 | 114 µs | 152 µs（glue 優化版）/ **127.6 µs（全 upstream 終態）** |
 | payload 斜率 | +17.9 µs | +10.1 µs（cached buffers） |
 | 額外產出 | — | 4 個 mainline bug 根因 + 修法、對停滯 rproc 系列的 review 與真機驗證 |
 
 ## 未竟事項
 
-- throughput 與有負載尾延遲量測；
-- wake 段（native 71.8µs）的細部拆解與縮減（vdev 分發間接層）。
+- throughput 與有負載尾延遲量測。
 
 ## 參考資料
 

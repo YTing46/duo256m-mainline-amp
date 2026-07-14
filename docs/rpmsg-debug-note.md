@@ -769,15 +769,44 @@ transport +3.3（韌體固定 slot 的 EN spin 檢查）、notify +2.0
 wwait 持平（27.8 vs 28.2）——mailbox 的 threaded IRQ（SCHED_FIFO/50）
 喚醒成本與 A1 的 RT kthread 相當。
 
-### 10.5 結論
+### 10.5 wake 細拆與 hard-IRQ 直送：反超手工 glue
+
+wake 段（68.9µs）再切四刀（w1=recv_done 進入、w2=skb 入列+喚醒、
+w3=讀者醒來）：
+
+| 子段 | 4B p50 | 內容 |
+|---|---|---|
+| vqdisp | 1.6µs | `rproc_vq_interrupt` 間接層——先前歸咎它是冤枉的 |
+| deliver | 22.8µs | dma invalidate + ept 查找 + skb 配置/拷貝 |
+| **sched** | **31.1µs** | irq thread → 使用者行程的排程喚醒 |
+| ret | 13.4µs | copy_to_user + syscall 返回 |
+
+關鍵洞察：接收路徑有**兩次** thread 交接（硬中斷→mailbox threaded
+IRQ=wwait 27.8µs、再→使用者行程=sched 31.1µs），但 mailbox 訊息只有
+8 bytes，下游全是 irq-safe 路徑（virtio 慣例本就在 hardirq 跑 vring
+callback）——threaded handler 純屬浪費。把收訊直送搬進硬中斷
+（commit c57796af5eb4）：
+
+| 版本 | RTT 4B p50 | p99 |
+|---|---|---|
+| vendor 5.10（Henry） | 114.0 | — |
+| glue 優化版 | 152.0 | — |
+| native ACK 模式 | 164.0 | 220 |
+| **native hard-IRQ 直送** | **127.6** | **178** |
+
+wwait 27.8 → 1.7µs，**100% upstream 架構反超手工 glue 24.4µs**，
+距 vendor 5.10 只剩 13.6µs；穩定性 1000/1000。
+
+### 10.6 結論
 
 - hrtimer 風暴是真 bug（第四個 mainline 級發現候選：`txpoll_period = 0`
   的退化行為，影響所有未設週期的 polling mailbox controller——framework
   或 driver 至少一方該防呆）；修掉後 native 路徑淨賺 12.4µs。
-- 修後仍比手工 glue 慢 12µs（8%）——這是標準框架的架構稅
-  （mailbox client 層、vdev 間接層、防遺失的 poke-both），
-  換到的是 100% mainline 架構與可維護性。每一微秒都有歸屬，
-  沒有未解之謎。
+- 「標準框架必然比手工 glue 慢」被推翻：架構稅其實集中在兩個
+  可修的點（poll hrtimer 風暴、多餘的 threaded handler），修完後
+  upstream 架構反而快 24µs。剩餘與 vendor 的 13.6µs 差距組成：
+  sched 28.6（使用者行程喚醒的本質成本）、deliver 22.8、
+  transport 26.9、sysin 20.4——每一微秒都有歸屬，沒有未解之謎。
 
 ---
 

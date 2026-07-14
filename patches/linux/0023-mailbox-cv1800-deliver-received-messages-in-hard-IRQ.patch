@@ -1,0 +1,96 @@
+From c57796af5eb40adce8c64e2de07a9e415f3cabb7 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Wed, 15 Jul 2026 00:25:43 +0800
+Subject: [PATCH 23/23] mailbox: cv1800: deliver received messages in hard-IRQ
+ context
+
+The 8-byte payload does not justify a threaded handler: the extra
+scheduler hop costs ~28us per message on the single-core C906B, on top
+of the client's own reader wakeup. Clients already deliver via
+IRQ-safe paths (virtio vring callbacks are conventionally run from
+hard IRQ).
+---
+ drivers/mailbox/cv1800-mailbox.c | 44 ++++++++++++++------------------
+ 1 file changed, 19 insertions(+), 25 deletions(-)
+
+diff --git a/drivers/mailbox/cv1800-mailbox.c b/drivers/mailbox/cv1800-mailbox.c
+index f6b6e520f132..b75e20350cfb 100644
+--- a/drivers/mailbox/cv1800-mailbox.c
++++ b/drivers/mailbox/cv1800-mailbox.c
+@@ -54,25 +54,6 @@ struct cv1800_mbox {
+ 	int recvid;
+ };
+ 
+-static irqreturn_t cv1800_mbox_isr(int irq, void *dev_id)
+-{
+-	struct cv1800_mbox *mbox = (struct cv1800_mbox *)dev_id;
+-	size_t i;
+-	u64 msg;
+-	int ret = IRQ_NONE;
+-
+-	for (i = 0; i < MAILBOX_MAX_CHAN; i++) {
+-		if (mbox->content[i] && mbox->chans[i].cl) {
+-			memcpy_fromio(&msg, mbox->content[i], MAILBOX_MSG_LEN);
+-			mbox->content[i] = NULL;
+-			mbox_chan_received_data(&mbox->chans[i], (void *)&msg);
+-			ret = IRQ_HANDLED;
+-		}
+-	}
+-
+-	return ret;
+-}
+-
+ /* RTT decomposition probes (measurement aid, see /proc/rpmsg_rtt) */
+ u64 cv1800_mbox_rtt_b2_ns;
+ EXPORT_SYMBOL_GPL(cv1800_mbox_rtt_b2_ns);
+@@ -97,10 +78,9 @@ static irqreturn_t cv1800_mbox_irq(int irq, void *dev_id)
+ 	for (i = 0; i < MAILBOX_MAX_CHAN; i++) {
+ 		valid = set & BIT(i);
+ 		if (valid) {
++			u64 msg;
+ 			u8 en;
+ 
+-			mbox->content[i] =
+-				MBOX_CONTEXT_BASE_INDEX(mbox->mbox_base, i);
+ 			writeb(valid, mbox->mbox_base +
+ 				      MBOX_SET_CLR_REG(RECV_CPU));
+ 			/*
+@@ -121,7 +101,22 @@ static irqreturn_t cv1800_mbox_irq(int irq, void *dev_id)
+ 			en = readb(mbox->mbox_base + MBOX_EN_REG(RECV_CPU));
+ 			writeb(en & ~valid, mbox->mbox_base +
+ 					    MBOX_EN_REG(RECV_CPU));
+-			ret = IRQ_WAKE_THREAD;
++
++			/*
++			 * Deliver in hard-IRQ context: the payload is 8
++			 * bytes and clients deliver via IRQ-safe paths, while
++			 * bouncing through a threaded handler costs a full
++			 * scheduler hop (~28us on the single C906B core) per
++			 * message on top of the client's own reader wakeup.
++			 */
++			if (mbox->chans[i].cl) {
++				memcpy_fromio(&msg,
++					      MBOX_CONTEXT_BASE_INDEX(mbox->mbox_base, i),
++					      MAILBOX_MSG_LEN);
++				mbox_chan_received_data(&mbox->chans[i],
++							(void *)&msg);
++			}
++			ret = IRQ_HANDLED;
+ 		}
+ 	}
+ 
+@@ -224,9 +219,8 @@ static int cv1800_mbox_probe(struct platform_device *pdev)
+ 	if (irq < 0)
+ 		return irq;
+ 
+-	err = devm_request_threaded_irq(dev, irq, cv1800_mbox_irq,
+-					cv1800_mbox_isr, IRQF_ONESHOT,
+-					dev_name(&pdev->dev), mb);
++	err = devm_request_irq(dev, irq, cv1800_mbox_irq, 0,
++			       dev_name(&pdev->dev), mb);
+ 	if (err < 0)
+ 		return dev_err_probe(dev, err, "Failed to register irq\n");
+ 
+-- 
+2.34.1
+

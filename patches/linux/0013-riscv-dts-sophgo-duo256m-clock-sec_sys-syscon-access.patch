@@ -1,7 +1,7 @@
 From 36da34aaed2a85b9db0d40b78261adf1f0d033a9 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 14 Jul 2026 04:50:02 +0800
-Subject: [PATCH 13/21] riscv: dts: sophgo: duo256m: clock sec_sys syscon
+Subject: [PATCH 13/23] riscv: dts: sophgo: duo256m: clock sec_sys syscon
  accesses with clk_efuse
 
 Any load/store to the SEC_SYS block (0x020b0000) with clk_efuse
