@@ -24,15 +24,14 @@
 
 最終形態（與 vendor SDK 的對照）：
 
-```
-                 vendor 5.10 (Henry)            本專題 mainline 7.0（終態）
-userspace        /dev/rpmsg0 (ioctl)            相同（不動）
-rpmsg bus        virtio_rpmsg_bus               virtio_rpmsg_bus（標準）
-virtio 接線      cvi_rpmsg_shmem.c (vendor)     remoteproc vdev ← 韌體 resource table
-kick/mailbox     rtos_cmdqu.c (vendor)          cv1800-mailbox.c（mainline，首個 in-tree 使用者）
-小核生命週期     vendor rproc driver            sophgo_cv1800b_c906l.c（upstream 候選 + .kick）
-小核韌體         FreeRTOS                       ThreadX + rpmsg-lite + resource table
-```
+| 層級 | vendor 5.10（Henry） | 本專題 mainline 7.0（終態） |
+|---|---|---|
+| userspace | `/dev/rpmsg0`（ioctl） | 相同（不動） |
+| rpmsg bus | `virtio_rpmsg_bus` | `virtio_rpmsg_bus`（標準） |
+| virtio 接線 | `cvi_rpmsg_shmem.c`（vendor） | remoteproc vdev ← 韌體 resource table |
+| kick / mailbox | `rtos_cmdqu.c`（vendor） | `cv1800-mailbox.c`（mainline，首個 in-tree 使用者） |
+| 小核生命週期 | vendor rproc driver | `sophgo_cv1800b_c906l.c`（upstream 候選 + `.kick`） |
+| 小核韌體 | FreeRTOS | ThreadX + rpmsg-lite + resource table |
 
 kernel patch 系列（v7.0-rc6 起 19 個 patch，可完整重現）與韌體修改（5 個 patch）
 都在 [GitHub repo](https://github.com/YTing46/duo256m-mainline-amp) 的 `patches/`。
