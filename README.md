@@ -19,15 +19,22 @@ Milk-V Duo256M（SG2002，雙 C906 AMP）的異質多核通訊機制移植：
 | **RPMsg 100% upstream 化**（remoteproc vdev + cv1800-mailbox，glue 退役） | ✅（300/300，**127.6µs**——反超手工 glue） |
 | mainline bug ×4：clk_efuse 依賴、mailbox EN 覆寫、rproc_virtio dma_coherent、mailbox txpoll hrtimer 風暴 | ✅ 皆附修法 |
 
-### 延遲數據（RTT p50, 10k iters）
+### 延遲數據（RTT p50）
 
-| 平台 | 4B | 496B | 斜率 |
+| 平台 | 4B | 480–496B | payload 斜率 |
 |---|---|---|---|
 | vendor 5.10（Henry 基線） | 114.0µs | 131.8µs | +17.9µs |
-| mainline 7.0（本專題，cached buffers + RT kthread） | 152.0µs | 162.1µs | **+10.1µs** |
+| mainline 7.0 glue 優化版（cached buffers + RT kthread） | 152.0µs | 162.1µs | +10.1µs |
+| mainline 7.0 全 upstream（修正前） | 176.4µs | — | — |
+| **mainline 7.0 全 upstream（終態：txdone-by-ACK + hard-IRQ 直送）** | **127.6µs** | 139.2µs | +11.6µs |
 
-常數項落後 ~30µs（wake 路徑，分解數據見 `bench/data/`），
-大 payload 斜率反超 vendor（cached buffers + streaming DMA sync 的效果）。
+全 upstream 架構最初比手工 glue 慢 24µs，逐段分解後定位出兩個可修的
+mainline 框架成本（mailbox poll hrtimer 空轉、threaded IRQ 排程來回），
+修正後**反超手工 glue 逾 20µs**，距 vendor 原生僅剩 13.6µs；
+p99 尾巴 301 → 178µs（殘餘尾巴經機率驗證為 kernel timer tick，非 bug）。
+大 payload 斜率仍優於 vendor（cached buffers + streaming DMA sync 的效果）。
+原始分解數據見 `bench/data/native-*.csv`（修正前 / ACK / hard-IRQ 三組），
+完整分析見 `docs/linux7-migration.md` 與 `docs/rpmsg-native-design.md`。
 
 ## 修掉的關鍵 bug
 
