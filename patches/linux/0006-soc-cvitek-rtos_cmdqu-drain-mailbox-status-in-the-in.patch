@@ -1,7 +1,7 @@
 From 8f9b9fe9a8c606714eed5f91379f5b2813686d06 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 7 Jul 2026 06:41:57 +0800
-Subject: [PATCH 06/17] soc: cvitek: rtos_cmdqu: drain mailbox status in the
+Subject: [PATCH 06/19] soc: cvitek: rtos_cmdqu: drain mailbox status in the
  interrupt handler
 
 The ISR sampled the mailbox interrupt status once and then walked that

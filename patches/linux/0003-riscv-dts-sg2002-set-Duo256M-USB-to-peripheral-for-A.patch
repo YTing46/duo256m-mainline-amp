@@ -1,7 +1,7 @@
 From 382b5d3fe034c3f11e5c05fea70b0ed0e3053fe7 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Mon, 6 Jul 2026 20:42:22 +0800
-Subject: [PATCH 03/17] riscv: dts: sg2002: set Duo256M USB to peripheral for
+Subject: [PATCH 03/19] riscv: dts: sg2002: set Duo256M USB to peripheral for
  ADB gadget
 
 The Duo256M's DWC2 controller is dual-role capable, but the ADB-over-USB

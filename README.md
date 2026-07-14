@@ -54,7 +54,7 @@ devm_rproc_add 與手動 rproc_del 的 double-delete），見 `patches/linux/001
 ## Repo 結構
 
 ```
-patches/linux/    17 個 patch：v7.0-rc6 → 完整可跑的 100% upstream 架構 AMP 系統
+patches/linux/    19 個 patch：v7.0-rc6 → 完整可跑的 100% upstream 架構 AMP 系統
                   （0009/0010 為 Junhui Liu 的 v2 系列，保留原作者署名）
 patches/threadx/  C906L ThreadX 韌體修改（基於 HenryChaing/ThreadX-to-RISC-V64）
 bench/            RTT 量測工具（總量/分解/payload sweep）+ CSV 數據

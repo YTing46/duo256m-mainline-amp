@@ -1,7 +1,7 @@
 From 0ffdb50e7533c586f596d812abf46551e72fe68d Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 7 Jul 2026 22:34:45 +0800
-Subject: [PATCH 11/17] fixup! drivers: remoteproc: Add C906L controller for
+Subject: [PATCH 11/19] fixup! drivers: remoteproc: Add C906L controller for
  Sophgo CV1800B SoC
 
 Local fixes to the v2 series for testing on SG2002 Duo256M, to be

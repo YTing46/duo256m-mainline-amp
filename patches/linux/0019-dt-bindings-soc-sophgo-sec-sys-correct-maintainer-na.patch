@@ -1,0 +1,27 @@
+From 4de266269a6509e3ac7b74883e3da2dc1e5c7b5a Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Tue, 14 Jul 2026 23:27:51 +0800
+Subject: [PATCH 19/19] dt-bindings: soc: sophgo: sec-sys: correct maintainer
+ name
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../devicetree/bindings/soc/sophgo/sophgo,cv1800b-sec-sys.yaml  | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Documentation/devicetree/bindings/soc/sophgo/sophgo,cv1800b-sec-sys.yaml b/Documentation/devicetree/bindings/soc/sophgo/sophgo,cv1800b-sec-sys.yaml
+index 4f2b170badda..3258ece3bab1 100644
+--- a/Documentation/devicetree/bindings/soc/sophgo/sophgo,cv1800b-sec-sys.yaml
++++ b/Documentation/devicetree/bindings/soc/sophgo/sophgo,cv1800b-sec-sys.yaml
+@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
+ title: Sophgo CV18XX/SG200X SoC security subsystem controller
+ 
+ maintainers:
+-  - Yu-Ting Tseng <q36141367@gs.ncku.edu.tw>
++  - Yu-Ting Wu <q36141367@gs.ncku.edu.tw>
+ 
+ description:
+   The Sophgo CV18XX/SG200X security subsystem (SEC_SYS) register block
+-- 
+2.34.1
+

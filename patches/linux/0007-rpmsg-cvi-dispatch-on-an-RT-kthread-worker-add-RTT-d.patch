@@ -1,7 +1,7 @@
 From 08b4d72a0109b816fc24ae896d2c8d0fcd692fd0 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 7 Jul 2026 21:29:18 +0800
-Subject: [PATCH 07/17] rpmsg: cvi: dispatch on an RT kthread worker; add RTT
+Subject: [PATCH 07/19] rpmsg: cvi: dispatch on an RT kthread worker; add RTT
  decomposition probes
 
 Replace the schedule_delayed_work() notification hop with a dedicated
