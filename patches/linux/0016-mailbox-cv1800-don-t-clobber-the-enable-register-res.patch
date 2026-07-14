@@ -15,7 +15,6 @@ Also clear the receive-side enable/pending state at probe: the block
 is not reset with the CPU, so stale bits from a previous kernel raise
 a phantom interrupt or wedge a sender's tx-done poll.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  drivers/mailbox/cv1800-mailbox.c | 23 ++++++++++++++++++++++-
  1 file changed, 22 insertions(+), 1 deletion(-)

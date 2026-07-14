@@ -20,7 +20,6 @@ vendor-era code never had to survive:
   coalesced kicks are safe (the host pokes every virtqueue on any
   mailbox interrupt).
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  cvitek/driver/rpmsg/src/rpmsg_platform.c | 14 ++++++--
  cvitek/task/comm/src/riscv64/comm_main.c | 43 ++++++++++++++++++------

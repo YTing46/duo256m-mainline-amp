@@ -12,7 +12,6 @@ rproc dma-noncoherent so the virtio-rpmsg buffer pool is not allocated
 cacheable (Bug #2 lesson). Drop the out-of-tree cvitek rpmsg/rtos_cmdqu
 glue nodes - virtio_rpmsg_bus now rides the remoteproc vdev.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  .../boot/dts/sophgo/sg2002-milkv-duo256m.dts  | 71 +++++++++----------
  1 file changed, 35 insertions(+), 36 deletions(-)

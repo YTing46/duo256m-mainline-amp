@@ -21,7 +21,6 @@ th.sxstatus.MAEE=1 and dev_is_dma_coherent()=0 on SG2002), and
 mailbox_pingpong completes 16/16 round-trips repeatably, including
 across remoteproc stop/start.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts | 11 +++++++++++
  1 file changed, 11 insertions(+)

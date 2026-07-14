@@ -14,7 +14,6 @@ and the payload may be overwritten by the time it is read.
 Channels are optional: without an mboxes property the driver behaves
 as before (lifecycle-only, standalone firmware).
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  drivers/remoteproc/sophgo_cv1800b_c906l.c | 113 ++++++++++++++++++++++
  1 file changed, 113 insertions(+)

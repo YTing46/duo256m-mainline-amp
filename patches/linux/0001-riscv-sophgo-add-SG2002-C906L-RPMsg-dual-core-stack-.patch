@@ -13,7 +13,6 @@ communication stack from the vendor Linux 5.10 SDK to mainline 7.0:
 - sg2002-milkv-duo256m.dts board devicetree
 - wire up Kconfig/Makefile and enable in riscv defconfig
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  arch/riscv/boot/dts/sophgo/Makefile           |   1 +
  .../boot/dts/sophgo/sg2002-milkv-duo256m.dts  | 132 ++++

@@ -10,7 +10,6 @@ peripheral so a host PC can see the board. Switch dr_mode from "host" to
 "peripheral"; a UDC (4340000.usb) now appears under /sys/class/udc and the
 host `adb devices` lists the board.
 
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 ---
  arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)

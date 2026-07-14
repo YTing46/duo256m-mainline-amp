@@ -10,7 +10,6 @@ vendor-glue rproc node with the sophgo,cv1800b-c906l binding in
 standalone mode. RPMsg keeps using the out-of-tree cvitek glue until
 the virtio/mailbox path is migrated.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  .../boot/dts/sophgo/sg2002-milkv-duo256m.dts  | 28 +++++++++++++++----
  1 file changed, 23 insertions(+), 5 deletions(-)

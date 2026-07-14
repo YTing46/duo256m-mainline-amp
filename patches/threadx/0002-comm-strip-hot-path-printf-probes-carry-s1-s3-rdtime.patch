@@ -12,7 +12,6 @@ and s3 right before rpmsg_lite_send, enabling the decomp4-style RTT
 breakdown. Legacy 4-byte pingpong clients still work (char-dev read
 truncates).
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  cvitek/task/comm/src/riscv64/comm_main.c | 41 ++++++++++++++++++------
  1 file changed, 31 insertions(+), 10 deletions(-)

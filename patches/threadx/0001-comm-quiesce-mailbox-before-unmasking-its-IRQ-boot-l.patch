@@ -20,7 +20,6 @@ Also carries the RT: DBG serial probes (ISR/task/readcb/send) used
 during the Bug #2/#3 investigation; to be stripped before latency
 measurements.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  cvitek/task/comm/src/riscv64/comm_main.c | 35 ++++++++++++++++++++++--
  1 file changed, 33 insertions(+), 2 deletions(-)

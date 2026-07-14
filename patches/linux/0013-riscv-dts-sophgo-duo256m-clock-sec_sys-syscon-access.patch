@@ -22,7 +22,6 @@ start/stop/start all return 0, rpmsg pingpong RTT ~155us, and the
 gate drops back to N when idle. Replaces the clk_ignore_unused
 cmdline workaround.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  arch/riscv/boot/dts/sophgo/sg2002-milkv-duo256m.dts | 9 +++++++++
  1 file changed, 9 insertions(+)

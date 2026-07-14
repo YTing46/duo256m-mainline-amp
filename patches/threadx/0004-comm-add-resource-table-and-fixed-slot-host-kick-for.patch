@@ -16,7 +16,6 @@ after 8 sends. TX-done = host clearing our enable bit. Still
 compatible with the vendor rtos_cmdqu host ISR (scans all slots,
 clears en + content).
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  cvitek/driver/rpmsg/src/rpmsg_platform.c | 33 +++++++++-
  cvitek/scripts/cv181x_lscript.ld         |  9 +++

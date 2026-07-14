@@ -21,7 +21,6 @@ init_sqirq/rtos_irq_handler/rtos_cmdqu_init/rtos_cmdqu_deinit and
 hw_spin_lock static, and include rtos_cmdqu_cb.h in rtos_cmdqu_cb.c so
 its prototype is visible. No functional change from these three.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  drivers/soc/cvitek/rtos_cmdqu/cvi_spinlock.c  |  2 +-
  drivers/soc/cvitek/rtos_cmdqu/rtos_cmdqu.c    | 41 ++++++++++---------

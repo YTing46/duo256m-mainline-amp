@@ -4,7 +4,6 @@ Date: Tue, 14 Jul 2026 23:27:51 +0800
 Subject: [PATCH 19/19] dt-bindings: soc: sophgo: sec-sys: correct maintainer
  name
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  .../devicetree/bindings/soc/sophgo/sophgo,cv1800b-sec-sys.yaml  | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)

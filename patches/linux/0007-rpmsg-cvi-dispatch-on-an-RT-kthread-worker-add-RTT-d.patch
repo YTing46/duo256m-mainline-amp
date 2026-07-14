@@ -18,7 +18,6 @@ Also add ktime/rdtime probes (b1/b1_done/b2/b2b) exported via
 /proc/rpmsg_rtt for the decomp4-style RTT breakdown used to measure
 this (Henry's methodology).
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  drivers/rpmsg/cvi_rpmsg_shmem.c | 66 +++++++++++++++++++++++++++++++--
  1 file changed, 62 insertions(+), 4 deletions(-)

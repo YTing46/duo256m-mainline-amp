@@ -15,7 +15,6 @@ Measured on SG2002 (10k-sample RTT decomposition, 4B payload): p50 RTT
 154.1us -> 150.5us; the gain grows with payload size since the copies
 dominate there. Pingpong 16/16 sanity holds.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  drivers/rpmsg/virtio_rpmsg_bus.c | 29 ++++++++++++++++++++++++-----
  1 file changed, 24 insertions(+), 5 deletions(-)

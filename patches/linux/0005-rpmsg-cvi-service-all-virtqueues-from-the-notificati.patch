@@ -19,7 +19,6 @@ print th.sxstatus MAEE and dev_is_dma_coherent() once at probe, since
 correct uncached/non-coherent behavior of the shared vrings and
 buffers depends on both.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  drivers/rpmsg/cvi_rpmsg_shmem.c | 25 ++++++++++++++++++++++++-
  1 file changed, 24 insertions(+), 1 deletion(-)

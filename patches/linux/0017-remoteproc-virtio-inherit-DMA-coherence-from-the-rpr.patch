@@ -15,7 +15,6 @@ Observed on SG2002 (dual C906 AMP): virtio-rpmsg messages arrive at
 the remote as all-zeroes while the cached view on the host looks
 correct.
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  drivers/remoteproc/remoteproc_virtio.c | 13 +++++++++++++
  1 file changed, 13 insertions(+)

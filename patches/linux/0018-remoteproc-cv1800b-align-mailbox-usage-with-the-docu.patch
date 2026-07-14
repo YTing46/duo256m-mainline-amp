@@ -14,7 +14,6 @@ Also spell out the enable-register RMW race with remote CPUs in the
 mailbox driver (no per-bit set/clear in hardware; a lost remote set
 self-heals on the next send).
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  .../soc/sophgo/sophgo,cv1800b-sec-sys.yaml    | 54 +++++++++++++++++++
  .../boot/dts/sophgo/sg2002-milkv-duo256m.dts  |  4 +-

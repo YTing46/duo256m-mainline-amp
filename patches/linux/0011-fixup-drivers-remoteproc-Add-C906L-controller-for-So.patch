@@ -15,7 +15,6 @@ folded into v3 / reported on-list:
 - dt-binding: drop the disallowed 'additionalItems: true' (Krzysztof's
   v2 review) and add sg2000/sg2002 compatibles with cv1800b fallback
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  .../bindings/remoteproc/sophgo,cv1800b-c906l.yaml    |  9 +++++++--
  drivers/remoteproc/sophgo_cv1800b_c906l.c            | 12 ++----------
