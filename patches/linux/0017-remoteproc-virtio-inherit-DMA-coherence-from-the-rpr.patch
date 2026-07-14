@@ -1,7 +1,7 @@
 From edc901527c7627f537d19cbe697898858c540598 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 14 Jul 2026 21:28:42 +0800
-Subject: [PATCH 17/23] remoteproc: virtio: inherit DMA coherence from the
+Subject: [PATCH 17/24] remoteproc: virtio: inherit DMA coherence from the
  rproc parent
 
 rproc_virtio_probe() copies the parent's dma_range_map, dma_ops and

@@ -1,7 +1,7 @@
 From b3f7aa9b36380ab754f135668598c8a5ba3a3b6e Mon Sep 17 00:00:00 2001
 From: Junhui Liu <junhui.liu@pigmoral.tech>
 Date: Mon, 28 Jul 2025 19:03:24 +0800
-Subject: [PATCH 10/23] drivers: remoteproc: Add C906L controller for Sophgo
+Subject: [PATCH 10/24] drivers: remoteproc: Add C906L controller for Sophgo
  CV1800B SoC
 
 Add initial support for the C906L remote processor found in the Sophgo

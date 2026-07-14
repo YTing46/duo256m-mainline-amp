@@ -797,7 +797,28 @@ callback）——threaded handler 純屬浪費。把收訊直送搬進硬中斷
 wwait 27.8 → 1.7µs，**100% upstream 架構反超手工 glue 24.4µs**，
 距 vendor 5.10 只剩 13.6µs；穩定性 1000/1000。
 
-### 10.6 結論
+### 10.6 收尾三題：正確性自首、two-stage sync、p99 尾巴
+
+**正確性自首**：hard-IRQ 直送讓 `rpmsg_recv_single` 的兩把 mutex
+（endpoints_lock/cb_lock）、`GFP_KERNEL` 補貨、NS announce 的
+`device_add()` 全部跑進原子上下文——能動是僥倖（mutex fastpath 無競爭、
+單 sg 不配置）。修正（commit 6b86b6fa7475）：兩把鎖轉 irq-safe spinlock
+（cb_lock 只有 virtio_rpmsg 使用，範圍可控）、GFP_ATOMIC、NS 頻道建立
+延遲到 work item。效能零代價（131.3µs，在 127–131 的 boot-to-boot
+變異內）、穩定性 1000/1000、NS 頻道正常。教訓：**把處理搬進更嚴格的
+context 時，整條下游路徑的 sleeping 原語都要重新審計**——「能跑」不是
+「正確」。
+
+**two-stage rx sync**：收包 invalidate 從整顆 512B buffer 改為
+「先 1 條 cache line（含 header+小 payload），長訊息才補刀」。理論省
+~0.7µs，實測埋在雜訊裡——保留（原則正確），誠實記錄無可測差異。
+
+**p99 尾巴破案**：p99−p50 ≈ 50µs 全在 wake/sysin 的隨機一段，突刺量級
+一致（~55µs）。HZ=250 → tick 每 4ms 一次 → 131µs 視窗命中率 3.3% →
+恰好從 p97 起飛，與實測（p90 +5µs、p99 +50µs）吻合。
+**尾巴 = kernel timer tick，不是 bug**；單核無 NO_HZ_FULL 可逃。
+
+### 10.7 結論
 
 - hrtimer 風暴是真 bug（第四個 mainline 級發現候選：`txpoll_period = 0`
   的退化行為，影響所有未設週期的 polling mailbox controller——framework

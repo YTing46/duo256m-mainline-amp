@@ -1,7 +1,7 @@
 From abcad4b44b760e4bca96a3d9b4277c152767a0a5 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 14 Jul 2026 23:27:51 +0800
-Subject: [PATCH 19/23] dt-bindings: soc: sophgo: sec-sys: correct maintainer
+Subject: [PATCH 19/24] dt-bindings: soc: sophgo: sec-sys: correct maintainer
  name
 
 ---

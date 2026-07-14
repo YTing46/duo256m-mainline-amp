@@ -1,0 +1,331 @@
+From 4ce0466ff2fae4de40b97893b743a9e2c2b23d8b Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Wed, 15 Jul 2026 00:52:16 +0800
+Subject: [PATCH 24/24] rpmsg: virtio: make the rx path hard-IRQ safe;
+ two-stage rx sync
+
+With mailbox delivery running in hard IRQ, the receive path's sleeping
+primitives become bugs: convert endpoints_lock and the endpoint
+cb_lock (only virtio_rpmsg uses it) to irq-safe spinlocks, repost rx
+buffers with GFP_ATOMIC, and move name-service channel
+creation/removal - which calls device_add() and friends - into a work
+item.
+
+While here, split the rx invalidate in two stages: one cache line
+covers the header plus small payloads (the pingpong hot path), the
+remainder is synced only when the actual message length needs it.
+---
+ drivers/rpmsg/rpmsg_ns.c         | 66 ++++++++++++++++++++++++--------
+ drivers/rpmsg/virtio_rpmsg_bus.c | 66 +++++++++++++++++++++-----------
+ include/linux/rpmsg.h            |  6 ++-
+ 3 files changed, 98 insertions(+), 40 deletions(-)
+
+diff --git a/drivers/rpmsg/rpmsg_ns.c b/drivers/rpmsg/rpmsg_ns.c
+index bde8c8d433e0..10ea9c9faf1e 100644
+--- a/drivers/rpmsg/rpmsg_ns.c
++++ b/drivers/rpmsg/rpmsg_ns.c
+@@ -8,6 +8,8 @@
+ #include <linux/rpmsg.h>
+ #include <linux/rpmsg/ns.h>
+ #include <linux/slab.h>
++#include <linux/workqueue.h>
++#include <linux/slab.h>
+ 
+ #include "rpmsg_internal.h"
+ 
+@@ -28,28 +30,28 @@ int rpmsg_ns_register_device(struct rpmsg_device *rpdev)
+ EXPORT_SYMBOL(rpmsg_ns_register_device);
+ 
+ /* invoked when a name service announcement arrives */
+-static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
+-		       void *priv, u32 src)
++/*
++ * Channel creation/removal sleeps (device_add and friends), but rx
++ * callbacks may now run in hard-IRQ context: handle the announcement
++ * itself in a work item.
++ */
++struct rpmsg_ns_work {
++	struct work_struct work;
++	struct rpmsg_device *rpdev;
++	struct rpmsg_ns_msg msg;
++};
++
++static void rpmsg_ns_work_fn(struct work_struct *work)
+ {
+-	struct rpmsg_ns_msg *msg = data;
++	struct rpmsg_ns_work *nsw =
++		container_of(work, struct rpmsg_ns_work, work);
++	struct rpmsg_device *rpdev = nsw->rpdev;
++	struct rpmsg_ns_msg *msg = &nsw->msg;
+ 	struct rpmsg_device *newch;
+ 	struct rpmsg_channel_info chinfo;
+ 	struct device *dev = rpdev->dev.parent;
+ 	int ret;
+ 
+-#if defined(CONFIG_DYNAMIC_DEBUG)
+-	dynamic_hex_dump("NS announcement: ", DUMP_PREFIX_NONE, 16, 1,
+-			 data, len, true);
+-#endif
+-
+-	if (len != sizeof(*msg)) {
+-		dev_err(dev, "malformed ns msg (%d)\n", len);
+-		return -EINVAL;
+-	}
+-
+-	/* don't trust the remote processor for null terminating the name */
+-	msg->name[RPMSG_NAME_SIZE - 1] = '\0';
+-
+ 	strscpy_pad(chinfo.name, msg->name, sizeof(chinfo.name));
+ 	chinfo.src = RPMSG_ADDR_ANY;
+ 	chinfo.dst = rpmsg32_to_cpu(rpdev, msg->addr);
+@@ -68,6 +70,38 @@ static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
+ 			dev_err(dev, "rpmsg_create_channel failed\n");
+ 	}
+ 
++	kfree(nsw);
++}
++
++static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
++		       void *priv, u32 src)
++{
++	struct rpmsg_ns_msg *msg = data;
++	struct device *dev = rpdev->dev.parent;
++	struct rpmsg_ns_work *nsw;
++
++#if defined(CONFIG_DYNAMIC_DEBUG)
++	dynamic_hex_dump("NS announcement: ", DUMP_PREFIX_NONE, 16, 1,
++			 data, len, true);
++#endif
++
++	if (len != sizeof(*msg)) {
++		dev_err(dev, "malformed ns msg (%d)\n", len);
++		return -EINVAL;
++	}
++
++	nsw = kzalloc(sizeof(*nsw), GFP_ATOMIC);
++	if (!nsw)
++		return -ENOMEM;
++
++	nsw->rpdev = rpdev;
++	memcpy(&nsw->msg, msg, sizeof(nsw->msg));
++	/* don't trust the remote processor for null terminating the name */
++	nsw->msg.name[RPMSG_NAME_SIZE - 1] = '\0';
++
++	INIT_WORK(&nsw->work, rpmsg_ns_work_fn);
++	schedule_work(&nsw->work);
++
+ 	return 0;
+ }
+ 
+diff --git a/drivers/rpmsg/virtio_rpmsg_bus.c b/drivers/rpmsg/virtio_rpmsg_bus.c
+index 110112999614..50a51cf11208 100644
+--- a/drivers/rpmsg/virtio_rpmsg_bus.c
++++ b/drivers/rpmsg/virtio_rpmsg_bus.c
+@@ -45,7 +45,7 @@
+  *		sending a message might require waking up a dozing remote
+  *		processor, which involves sleeping, hence the mutex.
+  * @endpoints:	idr of local endpoints, allows fast retrieval
+- * @endpoints_lock: lock of the endpoints set
++ * @endpoints_lock: lock of the endpoints set (irq-safe: rx runs in hard IRQ)
+  * @sendq:	wait queue of sending contexts waiting for a tx buffers
+  *
+  * This structure stores the rpmsg state of a given virtio remote processor
+@@ -62,7 +62,7 @@ struct virtproc_info {
+ 	dma_addr_t bufs_dma;
+ 	struct mutex tx_lock;
+ 	struct idr endpoints;
+-	struct mutex endpoints_lock;
++	spinlock_t endpoints_lock;
+ 	wait_queue_head_t sendq;
+ };
+ 
+@@ -209,13 +209,14 @@ static struct rpmsg_endpoint *__rpmsg_create_ept(struct virtproc_info *vrp,
+ 	int id_min, id_max, id;
+ 	struct rpmsg_endpoint *ept;
+ 	struct device *dev = rpdev ? &rpdev->dev : &vrp->vdev->dev;
++	unsigned long flags;
+ 
+ 	ept = kzalloc_obj(*ept);
+ 	if (!ept)
+ 		return NULL;
+ 
+ 	kref_init(&ept->refcount);
+-	mutex_init(&ept->cb_lock);
++	spin_lock_init(&ept->cb_lock);
+ 
+ 	ept->rpdev = rpdev;
+ 	ept->cb = cb;
+@@ -231,22 +232,22 @@ static struct rpmsg_endpoint *__rpmsg_create_ept(struct virtproc_info *vrp,
+ 		id_max = addr + 1;
+ 	}
+ 
+-	mutex_lock(&vrp->endpoints_lock);
++	spin_lock_irqsave(&vrp->endpoints_lock, flags);
+ 
+ 	/* bind the endpoint to an rpmsg address (and allocate one if needed) */
+-	id = idr_alloc(&vrp->endpoints, ept, id_min, id_max, GFP_KERNEL);
++	id = idr_alloc(&vrp->endpoints, ept, id_min, id_max, GFP_ATOMIC);
+ 	if (id < 0) {
+ 		dev_err(dev, "idr_alloc failed: %d\n", id);
+ 		goto free_ept;
+ 	}
+ 	ept->addr = id;
+ 
+-	mutex_unlock(&vrp->endpoints_lock);
++	spin_unlock_irqrestore(&vrp->endpoints_lock, flags);
+ 
+ 	return ept;
+ 
+ free_ept:
+-	mutex_unlock(&vrp->endpoints_lock);
++	spin_unlock_irqrestore(&vrp->endpoints_lock, flags);
+ 	kref_put(&ept->refcount, __ept_release);
+ 	return NULL;
+ }
+@@ -292,15 +293,17 @@ static struct rpmsg_endpoint *virtio_rpmsg_create_ept(struct rpmsg_device *rpdev
+ static void
+ __rpmsg_destroy_ept(struct virtproc_info *vrp, struct rpmsg_endpoint *ept)
+ {
++	unsigned long flags;
++
+ 	/* make sure new inbound messages can't find this ept anymore */
+-	mutex_lock(&vrp->endpoints_lock);
++	spin_lock_irqsave(&vrp->endpoints_lock, flags);
+ 	idr_remove(&vrp->endpoints, ept->addr);
+-	mutex_unlock(&vrp->endpoints_lock);
++	spin_unlock_irqrestore(&vrp->endpoints_lock, flags);
+ 
+ 	/* make sure in-flight inbound messages won't invoke cb anymore */
+-	mutex_lock(&ept->cb_lock);
++	spin_lock_irqsave(&ept->cb_lock, flags);
+ 	ept->cb = NULL;
+-	mutex_unlock(&ept->cb_lock);
++	spin_unlock_irqrestore(&ept->cb_lock, flags);
+ 
+ 	kref_put(&ept->refcount, __ept_release);
+ }
+@@ -662,6 +665,7 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
+ 	struct scatterlist sg;
+ 	bool little_endian = virtio_is_little_endian(vrp->vdev);
+ 	unsigned int msg_len = __rpmsg16_to_cpu(little_endian, msg->len);
++	unsigned long flags;
+ 	int err;
+ 
+ 	dev_dbg(dev, "From: 0x%x, To: 0x%x, Len: %d, Flags: %d, Reserved: %d\n",
+@@ -685,7 +689,7 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
+ 	}
+ 
+ 	/* use the dst addr to fetch the callback of the appropriate user */
+-	mutex_lock(&vrp->endpoints_lock);
++	spin_lock_irqsave(&vrp->endpoints_lock, flags);
+ 
+ 	ept = idr_find(&vrp->endpoints, __rpmsg32_to_cpu(little_endian, msg->dst));
+ 
+@@ -693,17 +697,17 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
+ 	if (ept)
+ 		kref_get(&ept->refcount);
+ 
+-	mutex_unlock(&vrp->endpoints_lock);
++	spin_unlock_irqrestore(&vrp->endpoints_lock, flags);
+ 
+ 	if (ept) {
+ 		/* make sure ept->cb doesn't go away while we use it */
+-		mutex_lock(&ept->cb_lock);
++		spin_lock_irqsave(&ept->cb_lock, flags);
+ 
+ 		if (ept->cb)
+ 			ept->cb(ept->rpdev, msg->data, msg_len, ept->priv,
+ 				__rpmsg32_to_cpu(little_endian, msg->src));
+ 
+-		mutex_unlock(&ept->cb_lock);
++		spin_unlock_irqrestore(&ept->cb_lock, flags);
+ 
+ 		/* farewell, ept, we don't need you anymore */
+ 		kref_put(&ept->refcount, __ept_release);
+@@ -714,7 +718,8 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
+ 	rpmsg_sg_init(&sg, msg, vrp->buf_size);
+ 
+ 	/* add the buffer back to the remote processor's virtqueue */
+-	err = virtqueue_add_inbuf(vrp->rvq, &sg, 1, msg, GFP_KERNEL);
++	/* rx runs in hard-IRQ context: no sleeping allocation */
++	err = virtqueue_add_inbuf(vrp->rvq, &sg, 1, msg, GFP_ATOMIC);
+ 	if (err < 0) {
+ 		dev_err(dev, "failed to add a virtqueue buffer: %d\n", err);
+ 		return err;
+@@ -745,11 +750,28 @@ static void rpmsg_recv_done(struct virtqueue *rvq)
+ 	}
+ 
+ 	while (msg) {
+-		/* cached pool: invalidate before reading the device's write */
+-		dma_sync_single_for_cpu(rvq->vdev->dev.parent,
+-					vrp->bufs_dma +
+-					((void *)msg - (void *)vrp->rbufs),
+-					vrp->buf_size, DMA_FROM_DEVICE);
++		dma_addr_t msg_dma = vrp->bufs_dma +
++				     ((void *)msg - (void *)vrp->rbufs);
++		unsigned int msg_len;
++
++		/*
++		 * Cached pool: invalidate before reading the device's write.
++		 * Two-stage: one cache line covers the 16-byte header plus
++		 * small payloads (the pingpong hot path); only sync the rest
++		 * when the actual length needs it. Saves ~7 line invalidates
++		 * per message vs syncing the whole 512-byte buffer.
++		 */
++		dma_sync_single_for_cpu(rvq->vdev->dev.parent, msg_dma,
++					L1_CACHE_BYTES, DMA_FROM_DEVICE);
++		msg_len = __rpmsg16_to_cpu(virtio_is_little_endian(rvq->vdev),
++					   msg->len);
++		if (sizeof(struct rpmsg_hdr) + msg_len > L1_CACHE_BYTES &&
++		    sizeof(struct rpmsg_hdr) + msg_len <= vrp->buf_size)
++			dma_sync_single_for_cpu(rvq->vdev->dev.parent,
++						msg_dma + L1_CACHE_BYTES,
++						sizeof(struct rpmsg_hdr) +
++						msg_len - L1_CACHE_BYTES,
++						DMA_FROM_DEVICE);
+ 		err = rpmsg_recv_single(vrp, dev, msg, len);
+ 		if (err)
+ 			break;
+@@ -848,7 +870,7 @@ static int rpmsg_probe(struct virtio_device *vdev)
+ 	vrp->vdev = vdev;
+ 
+ 	idr_init(&vrp->endpoints);
+-	mutex_init(&vrp->endpoints_lock);
++	spin_lock_init(&vrp->endpoints_lock);
+ 	mutex_init(&vrp->tx_lock);
+ 	init_waitqueue_head(&vrp->sendq);
+ 
+diff --git a/include/linux/rpmsg.h b/include/linux/rpmsg.h
+index fb7ab9165645..694adaa51183 100644
+--- a/include/linux/rpmsg.h
++++ b/include/linux/rpmsg.h
+@@ -16,6 +16,7 @@
+ #include <linux/mod_devicetable.h>
+ #include <linux/kref.h>
+ #include <linux/mutex.h>
++#include <linux/spinlock.h>
+ #include <linux/poll.h>
+ #include <linux/rpmsg/byteorder.h>
+ #include <uapi/linux/rpmsg.h>
+@@ -72,7 +73,8 @@ typedef int (*rpmsg_flowcontrol_cb_t)(struct rpmsg_device *, void *, bool);
+  * @refcount: when this drops to zero, the ept is deallocated
+  * @cb: rx callback handler
+  * @flow_cb: remote flow control callback handler
+- * @cb_lock: must be taken before accessing/changing @cb
++ * @cb_lock: must be taken before accessing/changing @cb (spinlock: rx
++ *           callbacks may be invoked from hard-IRQ context and must not sleep)
+  * @addr: local rpmsg address
+  * @priv: private data for the driver's use
+  *
+@@ -95,7 +97,7 @@ struct rpmsg_endpoint {
+ 	struct kref refcount;
+ 	rpmsg_rx_cb_t cb;
+ 	rpmsg_flowcontrol_cb_t flow_cb;
+-	struct mutex cb_lock;
++	spinlock_t cb_lock;
+ 	u32 addr;
+ 	void *priv;
+ 
+-- 
+2.34.1
+

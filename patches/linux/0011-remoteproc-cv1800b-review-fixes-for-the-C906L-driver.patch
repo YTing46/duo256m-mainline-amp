@@ -1,7 +1,7 @@
 From fa52fc007a0fa1633ede18b161c1c95be7414247 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 7 Jul 2026 22:34:45 +0800
-Subject: [PATCH 11/23] remoteproc: cv1800b: review fixes for the C906L driver
+Subject: [PATCH 11/24] remoteproc: cv1800b: review fixes for the C906L driver
 
 Address the v2 review findings before wiring the driver up: sparse
 __force annotations on the carveout iomem casts, drop the .remove

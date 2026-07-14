@@ -1,7 +1,7 @@
 From b90ffa1682abd540c35c54a5bf36345fe0554ff4 Mon Sep 17 00:00:00 2001
 From: Junhui Liu <junhui.liu@pigmoral.tech>
 Date: Mon, 28 Jul 2025 19:03:23 +0800
-Subject: [PATCH 09/23] dt-bindings: remoteproc: Add C906L rproc for Sophgo
+Subject: [PATCH 09/24] dt-bindings: remoteproc: Add C906L rproc for Sophgo
  CV1800B SoC
 
 Add C906L remote processor for CV1800B SoC, which is an asymmetric

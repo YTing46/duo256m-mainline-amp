@@ -1,7 +1,7 @@
 From 0ad3121fa4cde3e5f97d7b229aa4657c6e2a8b30 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 7 Jul 2026 06:41:41 +0800
-Subject: [PATCH 04/23] riscv: dts: sg2002: mark Duo256M rpmsg node
+Subject: [PATCH 04/24] riscv: dts: sg2002: mark Duo256M rpmsg node
  dma-noncoherent
 
 The rpmsg/rproc/rtos_cmdqu AMP nodes live at the devicetree root, not
