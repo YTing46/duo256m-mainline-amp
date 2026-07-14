@@ -1,0 +1,145 @@
+From ef62a21103dbeab9a90f5360c8640bdea82d1d4a Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Wed, 15 Jul 2026 00:04:52 +0800
+Subject: [PATCH 20/21] remoteproc: cv1800b: reinstate /proc/rpmsg_rtt
+ decomposition probes
+
+Measurement aid: same 6-value contract the out-of-tree glue exposed, so
+the existing RTT benchmarks decompose the native remoteproc/mailbox
+path. b2b-b2 isolates the mailbox threaded-IRQ wakeup cost.
+---
+ drivers/mailbox/cv1800-mailbox.c          | 11 +++++++
+ drivers/remoteproc/sophgo_cv1800b_c906l.c | 37 +++++++++++++++++++++++
+ 2 files changed, 48 insertions(+)
+
+diff --git a/drivers/mailbox/cv1800-mailbox.c b/drivers/mailbox/cv1800-mailbox.c
+index fb6b79781415..f6b6e520f132 100644
+--- a/drivers/mailbox/cv1800-mailbox.c
++++ b/drivers/mailbox/cv1800-mailbox.c
+@@ -11,10 +11,12 @@
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+ #include <linux/kfifo.h>
++#include <linux/ktime.h>
+ #include <linux/mailbox_controller.h>
+ #include <linux/module.h>
+ #include <linux/platform_device.h>
+ #include <linux/slab.h>
++#include <linux/timex.h>
+ 
+ #define RECV_CPU		1
+ 
+@@ -71,6 +73,12 @@ static irqreturn_t cv1800_mbox_isr(int irq, void *dev_id)
+ 	return ret;
+ }
+ 
++/* RTT decomposition probes (measurement aid, see /proc/rpmsg_rtt) */
++u64 cv1800_mbox_rtt_b2_ns;
++EXPORT_SYMBOL_GPL(cv1800_mbox_rtt_b2_ns);
++u64 cv1800_mbox_rtt_b2_tick;
++EXPORT_SYMBOL_GPL(cv1800_mbox_rtt_b2_tick);
++
+ static irqreturn_t cv1800_mbox_irq(int irq, void *dev_id)
+ {
+ 	struct cv1800_mbox *mbox = (struct cv1800_mbox *)dev_id;
+@@ -83,6 +91,9 @@ static irqreturn_t cv1800_mbox_irq(int irq, void *dev_id)
+ 	if (!set)
+ 		return ret;
+ 
++	cv1800_mbox_rtt_b2_ns = ktime_get_ns();
++	cv1800_mbox_rtt_b2_tick = get_cycles();
++
+ 	for (i = 0; i < MAILBOX_MAX_CHAN; i++) {
+ 		valid = set & BIT(i);
+ 		if (valid) {
+diff --git a/drivers/remoteproc/sophgo_cv1800b_c906l.c b/drivers/remoteproc/sophgo_cv1800b_c906l.c
+index 429080741ef5..768973f06d2c 100644
+--- a/drivers/remoteproc/sophgo_cv1800b_c906l.c
++++ b/drivers/remoteproc/sophgo_cv1800b_c906l.c
+@@ -5,15 +5,19 @@
+ 
+ #include <linux/bits.h>
+ #include <linux/interrupt.h>
++#include <linux/ktime.h>
+ #include <linux/mailbox_client.h>
+ #include <linux/mfd/syscon.h>
+ #include <linux/module.h>
+ #include <linux/of_device.h>
+ #include <linux/of_reserved_mem.h>
+ #include <linux/platform_device.h>
++#include <linux/proc_fs.h>
+ #include <linux/remoteproc.h>
+ #include <linux/reset.h>
+ #include <linux/regmap.h>
++#include <linux/seq_file.h>
++#include <linux/timex.h>
+ 
+ #include "remoteproc_internal.h"
+ 
+@@ -177,6 +181,27 @@ static int cv1800b_c906l_parse_fw(struct rproc *rproc,
+ 	return ret;
+ }
+ 
++/*
++ * RTT decomposition probes: same /proc/rpmsg_rtt contract the out-of-tree
++ * cvitek glue used, so the existing userspace benchmarks decompose the
++ * round trip on the native remoteproc/mailbox path too.
++ * b1/b1t/b1d bracket the TX kick, b2/b2t are stamped in the mailbox hard
++ * IRQ, b2b right before the virtqueues are poked (threaded context) --
++ * b2b-b2 exposes the threaded-IRQ wakeup cost.
++ */
++extern u64 cv1800_mbox_rtt_b2_ns;
++extern u64 cv1800_mbox_rtt_b2_tick;
++static u64 rtt_b1_ns, rtt_b1_tick, rtt_b1d_ns, rtt_b2b_ns;
++
++static int rpmsg_rtt_show(struct seq_file *m, void *v)
++{
++	seq_printf(m, "%llu %llu %llu %llu %llu %llu\n",
++		   rtt_b1_ns, rtt_b1_tick, rtt_b1d_ns,
++		   cv1800_mbox_rtt_b2_ns, cv1800_mbox_rtt_b2_tick,
++		   rtt_b2b_ns);
++	return 0;
++}
++
+ static void cv1800b_c906l_kick(struct rproc *rproc, int vqid)
+ {
+ 	struct cv1800b_c906l *priv = rproc->priv;
+@@ -185,9 +210,17 @@ static void cv1800b_c906l_kick(struct rproc *rproc, int vqid)
+ 	if (vqid < 0 || vqid >= CV1800B_C906L_NUM_VQS || !priv->tx_ch)
+ 		return;
+ 
++	if (vqid == 1) {	/* TX virtqueue: probe the send-side kick */
++		rtt_b1_ns = ktime_get_ns();
++		rtt_b1_tick = get_cycles();
++	}
++
+ 	ret = mbox_send_message(priv->tx_ch, &priv->kick_msg[vqid]);
+ 	if (ret < 0)
+ 		dev_err(priv->dev, "kick vq%d failed: %d\n", vqid, ret);
++
++	if (vqid == 1)
++		rtt_b1d_ns = ktime_get_ns();
+ }
+ 
+ static void cv1800b_c906l_mbox_rx(struct mbox_client *cl, void *data)
+@@ -196,6 +229,8 @@ static void cv1800b_c906l_mbox_rx(struct mbox_client *cl, void *data)
+ 		container_of(cl, struct cv1800b_c906l, client);
+ 	int i;
+ 
++	rtt_b2b_ns = ktime_get_ns();
++
+ 	/*
+ 	 * Back-to-back kicks from the firmware share one mailbox slot, so
+ 	 * the payload may already be overwritten by the time we read it.
+@@ -315,6 +350,8 @@ static int cv1800b_c906l_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "rproc_add failed\n");
+ 
++	proc_create_single("rpmsg_rtt", 0444, NULL, rpmsg_rtt_show);
++
+ 	return 0;
+ }
+ 
+-- 
+2.34.1
+

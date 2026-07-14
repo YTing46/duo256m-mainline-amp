@@ -1,0 +1,51 @@
+From 32257ff8eecd43812326fd47edbb9bf1ea43e9ef Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Wed, 15 Jul 2026 00:12:13 +0800
+Subject: [PATCH 21/21] remoteproc: cv1800b: fire-and-forget kicks via
+ TXDONE_BY_ACK
+
+Leaving tx-done to the mailbox framework's poll path arms its hrtimer,
+which respins at period 0 in hard-IRQ context until the remote clears
+its enable bit: on the single-core C906B that busy-loop steals the CPU
+for every kick-to-remote-ISR window and inflates the rpmsg round trip
+(observed +24us on the 4B pingpong p50, with a heavy p99 tail). Kicks
+are idempotent - both ends poke every virtqueue on any interrupt - so
+ack them immediately instead.
+---
+ drivers/remoteproc/sophgo_cv1800b_c906l.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/drivers/remoteproc/sophgo_cv1800b_c906l.c b/drivers/remoteproc/sophgo_cv1800b_c906l.c
+index 768973f06d2c..5dffc6ba13fd 100644
+--- a/drivers/remoteproc/sophgo_cv1800b_c906l.c
++++ b/drivers/remoteproc/sophgo_cv1800b_c906l.c
+@@ -218,6 +218,18 @@ static void cv1800b_c906l_kick(struct rproc *rproc, int vqid)
+ 	ret = mbox_send_message(priv->tx_ch, &priv->kick_msg[vqid]);
+ 	if (ret < 0)
+ 		dev_err(priv->dev, "kick vq%d failed: %d\n", vqid, ret);
++	else
++		/*
++		 * Kicks are fire-and-forget: the firmware coalesces them by
++		 * poking every virtqueue on any mailbox interrupt, so ack
++		 * immediately (TXDONE_BY_ACK via knows_txdone). Waiting for
++		 * the real tx-done would arm the framework's poll hrtimer,
++		 * which respins at period 0 in hard-IRQ context until the
++		 * remote clears its enable bit - a busy-loop that steals the
++		 * single C906B core for the whole kick-to-remote-ISR window
++		 * and inflates the rpmsg round trip by tens of microseconds.
++		 */
++		mbox_client_txdone(priv->tx_ch, 0);
+ 
+ 	if (vqid == 1)
+ 		rtt_b1d_ns = ktime_get_ns();
+@@ -276,6 +288,7 @@ static int cv1800b_c906l_request_mboxes(struct cv1800b_c906l *priv)
+ 
+ 	priv->client.dev = priv->dev;
+ 	priv->client.tx_block = false;
++	priv->client.knows_txdone = true;
+ 	priv->client.rx_callback = cv1800b_c906l_mbox_rx;
+ 
+ 	for (i = 0; i < CV1800B_C906L_NUM_VQS; i++)
+-- 
+2.34.1
+

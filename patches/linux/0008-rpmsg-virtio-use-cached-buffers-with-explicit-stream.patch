@@ -1,7 +1,7 @@
 From ee847cec87394e704a6917c5017a8e5132148b23 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 7 Jul 2026 21:39:31 +0800
-Subject: [PATCH 08/19] rpmsg: virtio: use cached buffers with explicit
+Subject: [PATCH 08/21] rpmsg: virtio: use cached buffers with explicit
  streaming DMA sync
 
 On a dma-noncoherent device dma_alloc_coherent() hands out an uncached

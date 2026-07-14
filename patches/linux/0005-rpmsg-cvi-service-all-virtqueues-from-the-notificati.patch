@@ -1,7 +1,7 @@
 From 67f6e5f7d09d51a67db112830612d8eaaf83d932 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 7 Jul 2026 06:41:57 +0800
-Subject: [PATCH 05/19] rpmsg: cvi: service all virtqueues from the
+Subject: [PATCH 05/21] rpmsg: cvi: service all virtqueues from the
  notification work handler
 
 The mailbox notification handler stored the incoming vring index in a

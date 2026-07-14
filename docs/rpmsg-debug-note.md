@@ -698,6 +698,89 @@ vdev 上全部靜默變 no-op → 訊息卡在 C906B 的 cache。vendor glue 時
 
 ---
 
+## 10. Native 路徑效能分析：mailbox poll hrtimer 風暴（2026-07-15）
+
+§9 收尾時 native 路徑 RTT ~170µs，比 glue 優化版的 152µs 慢。本章把差距拆到
+每一微秒，並揪出第四個 mainline 級問題。
+
+### 10.1 基線與探針重建
+
+先量基線（2000 iters/size）：**4B p50 = 176.4µs**（+24.4 vs glue），
+p99 尾巴異常重（~300µs）；韌體 turnaround 與 glue 時代相同（13.1 vs 13.7µs）
+→ 差距 100% 在 host 側。
+
+decomp 探針隨 glue 退役，在新路徑重生（保持 `/proc/rpmsg_rtt` 同一格式，
+userspace bench 零改動）：`b1/b1d` 夾住 rproc `.kick` 的 `mbox_send_message`、
+`b2/b2t` 打在 mailbox 硬中斷、`b2b` 打在 rx callback 分發前——
+`wwait = b2b - b2` 直接量出 threaded-IRQ 喚醒成本。
+
+### 10.2 第一輪 decomp：自相矛盾的數字即是答案
+
+| 段位（4B p50） | 數值 |
+|---|---|
+| RTT | 183.7µs |
+| notify（`mbox_send_message`） | **140.7µs** (!) |
+| hostrx（硬中斷→userspace） | **125.5µs** (!) |
+| 各段總和 | 324µs ≫ RTT |
+
+段位總和超過 RTT = 各段**時間重疊**，代表有東西在偷牆鐘。順藤摸瓜讀
+`drivers/mailbox/mailbox.c`：
+
+- cv1800-mailbox 用 `txdone_poll`，但**沒設 `txpoll_period`**（=0）；
+- framework 的 poll hrtimer 在 tx 未完成時
+  `hrtimer_forward_now(hrtimer, ms_to_ktime(0))` → **零週期連環觸發**，
+  hardirq context 的 busy-loop 一路打到韌體清 EN bit 為止；
+- C906B 是單核——風暴期間整顆 CPU 被 hrtimer 偷走，kick 路徑、echo
+  接收路徑、userspace 全部在慢動作中執行。140µs 的
+  `mbox_send_message` 和 300µs 的 p99 都是受害者，不是兇手。
+
+pingpong 每回合兩次 kick（TX + rx-buffer 補貨）讓風暴窗口加倍，
+第二發還會因第一發未 tx-done 被排進佇列等 hrtimer 撈。
+
+### 10.3 修法：TXDONE_BY_ACK fire-and-forget
+
+kick 本來就冪等（host 端「收到任一 mailbox 中斷就 poke 全部 vq」）：
+
+- **host**：`client.knows_txdone = true`（framework 轉 TXDONE_BY_ACK），
+  `mbox_send_message` 後立刻 `mbox_client_txdone()`——hrtimer 完全不啟動、
+  佇列零等待（commit 32257ff8eecd）；
+- **韌體**：對稱地「收到任一 host kick 就 `env_isr(0)+env_isr(1)`」，
+  讓共用 slot 的 kick 合併變得無害（commit 2a652bd）。
+
+### 10.4 修後逐段對照（4B p50，2000 iters）
+
+| 段位 | glue 優化版 | native 修前 | native ACK 修後 |
+|---|---|---|---|
+| **RTT** | **152.0** | 176.4 | **164.0** |
+| sysin | 21.5 | — | 21.6 |
+| notify | 3.1 | 140.7* | **5.1** |
+| transport | 25.6 | — | 28.9 |
+| turnaround | 13.6 | 13.1 | 14.2 |
+| wwait | 28.2 | — | 27.8 |
+| wake | 63.2 | — | 71.8 |
+| p99 | — | 301 | 220 |
+
+（* 修前段位互相重疊，僅供病徵參考）
+
+剩餘 +12µs 的歸屬：wake +8.6（remoteproc vdev 的分發間接層
+`rproc_vq_interrupt`/idr 查找 + poke-both 多掃一圈 used ring）、
+transport +3.3（韌體固定 slot 的 EN spin 檢查）、notify +2.0
+（mailbox framework 的佇列/鎖層疊 vs glue 裸寫暫存器）。
+wwait 持平（27.8 vs 28.2）——mailbox 的 threaded IRQ（SCHED_FIFO/50）
+喚醒成本與 A1 的 RT kthread 相當。
+
+### 10.5 結論
+
+- hrtimer 風暴是真 bug（第四個 mainline 級發現候選：`txpoll_period = 0`
+  的退化行為，影響所有未設週期的 polling mailbox controller——framework
+  或 driver 至少一方該防呆）；修掉後 native 路徑淨賺 12.4µs。
+- 修後仍比手工 glue 慢 12µs（8%）——這是標準框架的架構稅
+  （mailbox client 層、vdev 間接層、防遺失的 poke-both），
+  換到的是 100% mainline 架構與可維護性。每一微秒都有歸屬，
+  沒有未解之謎。
+
+---
+
 ## 附錄：本階段用到的工具（scratchpad）
 
 - serial_cap.py / scapro.py：以 termios2 BOTHER 設任意 baud（124000）擷取序列，scapro 為唯讀。

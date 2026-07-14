@@ -1,7 +1,7 @@
 From aaf96b10474bb3c9214ac12073bb2c9b8e6a22cd Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Sat, 4 Jul 2026 20:48:14 +0800
-Subject: [PATCH 01/19] riscv: sophgo: add SG2002 C906L RPMsg dual-core stack
+Subject: [PATCH 01/21] riscv: sophgo: add SG2002 C906L RPMsg dual-core stack
  for Milk-V Duo256M
 
 Port the CVITEK/Sophgo dual-core (big core <-> C906L little core)

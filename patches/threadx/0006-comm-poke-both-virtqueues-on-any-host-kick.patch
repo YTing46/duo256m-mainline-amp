@@ -1,0 +1,37 @@
+From 2a652bd0ab92f8a329db544f8ba00f5deb37a416 Mon Sep 17 00:00:00 2001
+From: YTing46 <q36141367@gs.ncku.edu.tw>
+Date: Wed, 15 Jul 2026 00:11:55 +0800
+Subject: [PATCH 6/6] comm: poke both virtqueues on any host kick
+
+Host kicks are fire-and-forget now (mailbox TXDONE_BY_ACK) and share
+one slot, so kicks for different vqs can coalesce; env_isr just
+re-checks the ring.
+---
+ cvitek/task/comm/src/riscv64/comm_main.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/cvitek/task/comm/src/riscv64/comm_main.c b/cvitek/task/comm/src/riscv64/comm_main.c
+index 7e92194..69b3d76 100755
+--- a/cvitek/task/comm/src/riscv64/comm_main.c
++++ b/cvitek/task/comm/src/riscv64/comm_main.c
+@@ -393,9 +393,15 @@ void prvCmdQuRunTask(ULONG thread_input)
+ 
+ 		switch (rtos_cmdq.cmd_id) {
+ 		case 0 :
+-			env_isr(0);
+-			break;
+ 		case 1 :
++			/*
++			 * Host kicks are fire-and-forget (TXDONE_BY_ACK) and
++			 * share one mailbox slot, so back-to-back kicks for
++			 * different vqs can coalesce into one message. Poke
++			 * both queues - env_isr() just re-checks the ring, a
++			 * spurious poke is cheap, a lost one stalls rpmsg.
++			 */
++			env_isr(0);
+ 			env_isr(1);
+ 			break;
+ 		case CMD_TEST_A:
+-- 
+2.34.1
+

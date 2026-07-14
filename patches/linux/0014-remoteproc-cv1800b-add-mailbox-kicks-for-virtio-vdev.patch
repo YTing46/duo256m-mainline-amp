@@ -1,7 +1,7 @@
 From 638ac2b8aea9f81b061f3a2f9ce1ec909f6c34d8 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 14 Jul 2026 20:22:19 +0800
-Subject: [PATCH 14/19] remoteproc: cv1800b: add mailbox kicks for virtio vdev
+Subject: [PATCH 14/21] remoteproc: cv1800b: add mailbox kicks for virtio vdev
  support
 
 Wire the C906L rproc to the cv1800 mailbox so the remoteproc core can

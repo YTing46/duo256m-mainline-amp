@@ -1,7 +1,7 @@
 From 0919ff4da5625e1365f9c8a7e25352876fcebefa Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 14 Jul 2026 20:22:10 +0800
-Subject: [PATCH 4/5] comm: add resource table and fixed-slot host kick for
+Subject: [PATCH 4/6] comm: add resource table and fixed-slot host kick for
  mainline remoteproc
 
 Resource table (.resource_table section, pulled in via EXTERN) exposes

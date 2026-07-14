@@ -1,7 +1,7 @@
 From 43e8a5f5f88cf8c652e25b7b8a915bf5e5e9f643 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 7 Jul 2026 22:44:56 +0800
-Subject: [PATCH 12/19] riscv: dts: sg2002: switch Duo256M to the upstream
+Subject: [PATCH 12/21] riscv: dts: sg2002: switch Duo256M to the upstream
  C906L remoteproc
 
 Add the SEC_SYS syscon node (0x020b0000, the same block the vendor

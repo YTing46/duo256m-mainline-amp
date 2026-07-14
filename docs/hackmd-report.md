@@ -8,7 +8,7 @@
 
 復刻並延伸 [HenryChaing 的「Linux 核心專題: 異質多核通訊機制」](https://hackmd.io/@sysprog/linux2025-projects)：在 Milk-V Duo 256M（SG2002，雙 T-Head C906 AMP 架構）上建立 Linux 大核與 ThreadX 小核的 RPMsg 通訊，並量化延遲。
 
-原專題跑在 vendor 的 Linux 5.10 SDK 上；本專題把整條堆疊搬上 **mainline Linux 7.0-rc6**，過程中修掉三個通訊 bug、發現並修正**三個 mainline 級的 bug**，最終達成 RPMsg 堆疊 **100% upstream 架構**（vendor 專用 driver 全數退役）。
+原專題跑在 vendor 的 Linux 5.10 SDK 上；本專題把整條堆疊搬上 **mainline Linux 7.0-rc6**，過程中修掉三個通訊 bug、發現並修正**四個 mainline 級的 bug**，最終達成 RPMsg 堆疊 **100% upstream 架構**（vendor 專用 driver 全數退役）。
 
 ## TODO 與完成狀態
 
@@ -18,7 +18,8 @@
 - [x] upstream C906L remoteproc driver（Junhui Liu v2 系列）真機打通 + 3 個 review 修正
 - [x] SEC_SYS clock 根因（mainline 級）+ 正式修法
 - [x] RPMsg 全 upstream 化：remoteproc vdev + 標準 virtio_rpmsg_bus + mainline cv1800-mailbox
-- [ ] native 路徑 RTT 差距分析（+15µs）、throughput 量測
+- [x] native 路徑 RTT 差距分析（hrtimer 風暴根因 + 逐段歸屬）
+- [ ] throughput 量測
 
 ## 系統架構
 
@@ -33,7 +34,7 @@
 | 小核生命週期 | vendor rproc driver | `sophgo_cv1800b_c906l.c`（upstream 候選 + `.kick`） |
 | 小核韌體 | FreeRTOS | ThreadX + rpmsg-lite + resource table |
 
-kernel patch 系列（v7.0-rc6 起 19 個 patch，可完整重現）與韌體修改（5 個 patch）
+kernel patch 系列（v7.0-rc6 起 21 個 patch，可完整重現）與韌體修改（5 個 patch）
 都在 [GitHub repo](https://github.com/YTing46/duo256m-mainline-amp) 的 `patches/`。
 
 ## 量化結果
@@ -44,7 +45,7 @@ kernel patch 系列（v7.0-rc6 起 19 個 patch，可完整重現）與韌體修
 |---|---|---|---|
 | vendor 5.10（Henry 基線） | 114.0 µs | 131.8 µs | +17.9 µs |
 | mainline 7.0 + 優化（cached buffers、RT kthread） | 152.0 µs | 162.1 µs | **+10.1 µs** |
-| mainline 7.0 全 upstream 架構（終態） | ~170 µs | — | 待量測 |
+| mainline 7.0 全 upstream 架構（修掉 hrtimer 風暴後） | 164.0 µs | 174.8 µs（480B） | +10.9 µs |
 
 觀察：
 
@@ -52,16 +53,18 @@ kernel patch 系列（v7.0-rc6 起 19 個 patch，可完整重現）與韌體修
   （wake 段 ~62.7µs，近乎純常數）；
 - **大 payload 斜率反超 vendor**（+10.1 vs +17.9 µs）——把 virtio buffer pool
   從 uncached 改成 cached + 顯式 streaming DMA sync 的效果；
-- 全 upstream 架構再多 ~15µs（mailbox framework 的 txdone polling 開銷，待分析）。
+- 全 upstream 架構相對 glue 多 12µs（8%）——decomp 逐段歸屬：vdev 分發間接層
+  +8.6、韌體固定 slot 檢查 +3.3、mailbox framework 層疊 +2.0，
+  是「標準框架 vs 手工 glue」的架構稅，每一微秒有主。
 
 ### 穩定性
 
 pingpong 300/300、熱重啟（rproc stop/start）後 vring 重同步正常、
 開機自動流程（init script）全綠。
 
-## 三個 mainline 級的發現（本專題最有價值的部分）
+## 四個 mainline 級的發現（本專題最有價值的部分）
 
-三個都是「vendor 世界不會發生、一到 mainline 規則下就爆炸」的 bug，
+四個都是「vendor 世界不會發生、一到 mainline 規則下就爆炸」的 bug，
 皆附最小重現與已驗證的修法。
 
 ### 1. SEC_SYS 暫存器區的隱藏時脈依賴（整板懸死）
@@ -105,6 +108,16 @@ vdev 配置的 ring/buffer 記憶體所有 `dma_sync_*()` **靜默變成 no-op**
 大核的 cache）——在 rpmsg-lite 的分發點插探針記錄 `dst=0, src=0, len=0`
 才定罪。修法一行（繼承旗標）。這個 bug 影響所有
 「dma-noncoherent 平台 + remoteproc virtio」的組合。
+
+### 4. mailbox polling 的 hrtimer 風暴
+
+全 upstream 路徑最初比 glue 慢 24µs 且 p99 尾巴達 300µs。decomp 顯示
+`mbox_send_message` 牆鐘 140µs——cv1800-mailbox 用 `txdone_poll` 但沒設
+`txpoll_period`（=0），framework 的 poll hrtimer 以**零週期在 hardirq
+context 連環觸發**直到對端清 enable bit，單核的 C906B 整顆被偷走。
+修法：kick 本來就冪等（兩端都 poke 全部 virtqueue），改用
+`knows_txdone`（TXDONE_BY_ACK）fire-and-forget——hrtimer 不再啟動，
+RTT 176→164µs、p99 301→220µs。
 
 ## 移植過程修掉的三個通訊 bug（摘要）
 
@@ -153,16 +166,14 @@ vdev 配置的 ring/buffer 記憶體所有 `dma_sync_*()` **靜默變成 no-op**
 |---|---|---|
 | kernel | vendor SDK | mainline + 19 patches（可重現） |
 | RPMsg 堆疊 | vendor glue | 100% upstream 架構 |
-| RTT 4B p50 | 114 µs | 152 µs（glue 優化版）/ ~170 µs（全 upstream） |
+| RTT 4B p50 | 114 µs | 152 µs（glue 優化版）/ 164 µs（全 upstream） |
 | payload 斜率 | +17.9 µs | +10.1 µs（cached buffers） |
-| 額外產出 | — | 3 個 mainline bug 根因 + 修法、對停滯 rproc 系列的 review 與真機驗證 |
+| 額外產出 | — | 4 個 mainline bug 根因 + 修法、對停滯 rproc 系列的 review 與真機驗證 |
 
 ## 未竟事項
 
-- native 路徑的 host 端延遲分解探針重建 → 定位 +15µs（mailbox framework
-  `txdone_poll` 嫌疑最大）；
 - throughput 與有負載尾延遲量測；
-- wake 段 62.7µs 的細部拆解（payload sweep 已證實為純常數開銷）。
+- wake 段（native 71.8µs）的細部拆解與縮減（vdev 分發間接層）。
 
 ## 參考資料
 

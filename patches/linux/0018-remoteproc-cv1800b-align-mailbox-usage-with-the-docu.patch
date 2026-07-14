@@ -1,7 +1,7 @@
 From fc12fb3d596d1ab591efe5ac3f4fea9d7648a740 Mon Sep 17 00:00:00 2001
 From: YTing46 <q36141367@gs.ncku.edu.tw>
 Date: Tue, 14 Jul 2026 23:22:18 +0800
-Subject: [PATCH 18/19] remoteproc: cv1800b: align mailbox usage with the
+Subject: [PATCH 18/21] remoteproc: cv1800b: align mailbox usage with the
  documented binding
 
 The binding already specifies two channels named tx/rx; use a single

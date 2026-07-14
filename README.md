@@ -17,7 +17,7 @@ Milk-V Duo256M（SG2002，雙 C906 AMP）的異質多核通訊機制移植：
 | SEC_SYS clock 根因（mainline 級 bug）+ 正式修法 | ✅ |
 | RTT 分解量測 + payload sweep 對照 vendor | ✅ |
 | **RPMsg 100% upstream 化**（remoteproc vdev + cv1800-mailbox，glue 退役） | ✅（300/300，~170µs） |
-| mainline bug ×3：clk_efuse 依賴、mailbox EN 覆寫、rproc_virtio dma_coherent | ✅ 皆附修法 |
+| mainline bug ×4：clk_efuse 依賴、mailbox EN 覆寫、rproc_virtio dma_coherent、mailbox txpoll hrtimer 風暴 | ✅ 皆附修法 |
 
 ### 延遲數據（RTT p50, 10k iters）
 
@@ -54,9 +54,9 @@ devm_rproc_add 與手動 rproc_del 的 double-delete），見 `patches/linux/001
 ## Repo 結構
 
 ```
-patches/linux/    19 個 patch：v7.0-rc6 → 完整可跑的 100% upstream 架構 AMP 系統
+patches/linux/    21 個 patch：v7.0-rc6 → 完整可跑的 100% upstream 架構 AMP 系統
                   （0009/0010 為 Junhui Liu 的 v2 系列，保留原作者署名）
-patches/threadx/  C906L ThreadX 韌體修改（基於 HenryChaing/ThreadX-to-RISC-V64）
+patches/threadx/  C906L ThreadX 韌體修改（6 個 patch）（基於 HenryChaing/ThreadX-to-RISC-V64）
 bench/            RTT 量測工具（總量/分解/payload sweep）+ CSV 數據
 board/            板端開機鏈 scripts（S97adb/S98cvirtos/S99user、usb-adb.sh）、
                   boot.its（FIT）、驗證過的 kernel .config
